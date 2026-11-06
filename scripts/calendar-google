@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""Google Calendar helper for the Calendar plugin. State.qml runs it, and so can
+an agent or a script.
+
+  calendar-google range FROM TO    every listed calendar, FROM <= day < TO
+  calendar-google create < JSON    add one event
+
+create reads {"title", "date": "YYYY-MM-DD", "start": "HH:MM", "end": "HH:MM",
+"location", "calendarId"} from stdin; only title and date are required. No start
+makes it all-day, no end makes it an hour, no calendarId uses the primary one.
+What was typed arrives on stdin, never as an argument. Guests are not supported,
+so nobody is ever emailed.
+
+Prints one JSON object on stdout, always:
+
+  {"ok": true, "account": ..., "calendars": [...], "events": [...]}
+  {"ok": true, "id": ..., "url": ...}
+  {"ok": false, "code": "missing|signin|offline|error", "error": ...}
+
+Signing in is gws's, the Google Workspace CLI. Its saved sign-in comes from
+`gws auth export --unmasked` over a pipe, is turned into an access token here,
+and both stay in this process's memory. Nothing is written to disk. A failure
+never prints Google's response, a token or an event's text.
+
+Derived from backends/google.py in crmne/omarchy-calendar (MIT), cut down to
+reading and adding. See THIRD_PARTY_NOTICES.md.
+"""
+import concurrent.futures
+import datetime as dt
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+API = "https://www.googleapis.com/calendar/v3"
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+RESPONSE_LIMIT = 8 * 1024 * 1024
+EVENT_LIMIT = 4000
+CALENDAR_LIMIT = 100
+MAX_DAYS = 100
+INPUT_LIMIT = 64 * 1024
+TIMEOUT = 20
+
+
+class Failure(Exception):
+    def __init__(self, message, code="error"):
+        super().__init__(message)
+        self.code = code
+
+
+# ---------------------------------------------------------------------------
+# Signing in, through gws
+# ---------------------------------------------------------------------------
+
+def read_json_file(path):
+    try:
+        with open(path, "rb") as handle:
+            return json.loads(handle.read(65536))
+    except (OSError, ValueError):
+        return None
+
+
+def gws_config_dir():
+    configured = os.environ.get("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", "")
+    if configured:
+        return configured
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "gws")
+
+
+def credentials():
+    """gws's saved sign-in: client id and secret, and the refresh token."""
+    found = None
+    # gws's own documented override, honoured the same way gws does.
+    named = os.environ.get("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "")
+    if named:
+        found = read_json_file(named)
+    if found is None:
+        try:
+            result = subprocess.run(["gws", "auth", "export", "--unmasked"], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False)
+        except FileNotFoundError:
+            raise Failure("gws is not installed.", "missing") from None
+        except subprocess.TimeoutExpired:
+            raise Failure("gws did not hand over its sign-in. Is the keyring unlocked?", "signin") from None
+        if result.returncode == 0:
+            try:
+                found = json.loads(result.stdout[:65536])
+            except ValueError:
+                found = None
+    if found is None:
+        # gws keeps an unencrypted sign-in here when it has no keyring.
+        found = read_json_file(os.path.join(gws_config_dir(), "credentials.json"))
+    if not isinstance(found, dict) or not all(isinstance(found.get(k), str) and found.get(k)
+                                              for k in ("client_id", "client_secret", "refresh_token")):
+        raise Failure("gws is not signed in to Google.", "signin")
+    return found
+
+
+def access_token():
+    creds = credentials()
+    form = urllib.parse.urlencode({
+        "client_id": creds["client_id"], "client_secret": creds["client_secret"],
+        "refresh_token": creds["refresh_token"], "grant_type": "refresh_token",
+    }).encode()
+    request = urllib.request.Request(TOKEN_URL, data=form, method="POST",
+                                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+            answer = json.loads(response.read(65536))
+    except urllib.error.HTTPError as error:
+        if error.code in (400, 401):
+            raise Failure("Google no longer accepts this sign-in.", "signin") from None
+        raise Failure("Google's sign-in service had a problem (HTTP %d)." % error.code) from None
+    except (urllib.error.URLError, OSError):
+        raise Failure("Could not reach Google.", "offline") from None
+    except ValueError:
+        raise Failure("Google's sign-in answer could not be read.") from None
+    token = answer.get("access_token") if isinstance(answer, dict) else None
+    if not isinstance(token, str) or not token:
+        raise Failure("Google did not hand over a sign-in.", "signin")
+    return token
+
+
+# ---------------------------------------------------------------------------
+# Google's API
+# ---------------------------------------------------------------------------
+
+class Google:
+    def __init__(self):
+        self.token = access_token()
+
+    def call(self, path, params=None, body=None):
+        url = API + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        headers = {"Authorization": "Bearer " + self.token, "Accept": "application/json"}
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(url, data=data, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                raw = response.read(RESPONSE_LIMIT + 1)
+        except urllib.error.HTTPError as error:
+            raise Failure(*http_failure(error)) from None
+        except (urllib.error.URLError, OSError):
+            raise Failure("Could not reach Google.", "offline") from None
+        if len(raw) > RESPONSE_LIMIT:
+            raise Failure("Google's answer is too large.")
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            raise Failure("Google's answer could not be read.") from None
+        if not isinstance(value, dict):
+            raise Failure("Google's answer could not be read.")
+        return value
+
+    def pages(self, path, params, limit):
+        items = []
+        seen = set()
+        params = dict(params)
+        for _ in range(50):
+            page = self.call(path, params)
+            listed = page.get("items", [])
+            if not isinstance(listed, list):
+                raise Failure("Google's answer could not be read.")
+            items.extend(item for item in listed if isinstance(item, dict))
+            if len(items) > limit:
+                raise Failure("Google has more events there than this will read.")
+            token = page.get("nextPageToken")
+            if not token:
+                return items
+            if token in seen:
+                break
+            seen.add(token)
+            params["pageToken"] = token
+        raise Failure("Google kept answering with more pages.")
+
+
+def http_failure(error):
+    code = error.code
+    if code == 401:
+        return "Google no longer accepts this sign-in.", "signin"
+    if code == 403:
+        reason = ""
+        try:
+            detail = json.loads(error.read(65536))
+            errors = detail.get("error", {}).get("errors", [])
+            reason = str(errors[0].get("reason", "")) if errors else str(detail.get("error", {}).get("status", ""))
+        except (ValueError, AttributeError, OSError, IndexError, TypeError):
+            pass
+        if reason in ("insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"):
+            return "This sign-in cannot do that. Sign in again with write access.", "signin"
+        if reason in ("accessNotConfigured", "SERVICE_DISABLED"):
+            return "The Calendar API is not enabled on your Google Cloud project.", "signin"
+        return "Google refused the request (HTTP 403).", "error"
+    if code == 429:
+        return "Google asked to slow down.", "error"
+    return "Google had a problem (HTTP %d)." % code, "error"
+
+
+# ---------------------------------------------------------------------------
+# Events
+# ---------------------------------------------------------------------------
+
+def listed_calendars(google):
+    """The calendars shown in Google Calendar's own list."""
+    calendars = google.pages("/users/me/calendarList", {"maxResults": 250}, CALENDAR_LIMIT)
+    return [c for c in calendars if isinstance(c.get("id"), str) and c.get("selected") is True
+            and not c.get("hidden") and not c.get("deleted")
+            and c.get("accessRole") in ("freeBusyReader", "reader", "writer", "owner")]
+
+
+def calendar_name(calendar):
+    return str(calendar.get("summaryOverride") or calendar.get("summary") or calendar.get("id") or "")
+
+
+def local_midnight(day):
+    return dt.datetime.combine(day, dt.time()).astimezone()
+
+
+def parse_instant(value):
+    parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed
+
+
+def millis(moment):
+    return int(moment.timestamp() * 1000)
+
+
+def event_bounds(event):
+    """(start, end, all_day). An all-day event runs from midnight of its first
+    day to midnight after its last, here."""
+    start, end = event.get("start") or {}, event.get("end") or {}
+    if start.get("date"):
+        first = dt.date.fromisoformat(start["date"])
+        after = dt.date.fromisoformat(end["date"]) if end.get("date") else first + dt.timedelta(days=1)
+        if after <= first:
+            after = first + dt.timedelta(days=1)
+        return local_midnight(first), local_midnight(after), True
+    begins = parse_instant(start["dateTime"])
+    ends = parse_instant(end["dateTime"]) if end.get("dateTime") else begins
+    return begins, max(ends, begins), False
+
+
+def reminder_minutes(event, calendar):
+    reminders = event.get("reminders") or {}
+    rules = (calendar.get("defaultReminders") or []) if reminders.get("useDefault") else (reminders.get("overrides") or [])
+    return [r["minutes"] for r in rules
+            if isinstance(r, dict) and r.get("method") == "popup" and isinstance(r.get("minutes"), int)
+            and 0 <= r["minutes"] <= 40320][:8]
+
+
+def video_link(event):
+    if isinstance(event.get("hangoutLink"), str) and event["hangoutLink"]:
+        return event["hangoutLink"]
+    for point in (event.get("conferenceData") or {}).get("entryPoints") or []:
+        if isinstance(point, dict) and point.get("entryPointType") == "video" and isinstance(point.get("uri"), str):
+            return point["uri"]
+    return ""
+
+
+def web_link(value):
+    # These reach Qt.openUrlExternally, so only ever a web address.
+    value = str(value or "")
+    return value if value.startswith("https://") else ""
+
+
+def project_event(event, calendar):
+    """One Google event in the panel's shape, or None to leave it out."""
+    if event.get("status") == "cancelled" or event.get("eventType") == "workingLocation":
+        return None
+    start = event.get("start") or {}
+    if not isinstance(event.get("id"), str) or not (start.get("date") or start.get("dateTime")):
+        return None
+    begins, ends, all_day = event_bounds(event)
+    declined = any(isinstance(a, dict) and a.get("self") and a.get("responseStatus") == "declined"
+                   for a in event.get("attendees") or [])
+    return {
+        "id": calendar["id"] + "/" + event["id"],
+        "title": str(event.get("summary") or "(untitled)"),
+        "allDay": all_day, "start": millis(begins), "end": millis(ends),
+        "calendarId": calendar["id"], "calendar": calendar_name(calendar),
+        "color": str(calendar.get("backgroundColor") or ""),
+        "location": str(event.get("location") or ""),
+        "url": web_link(event.get("htmlLink")), "joinUrl": web_link(video_link(event)),
+        "declined": declined,
+        "reminders": [millis(begins - dt.timedelta(minutes=m)) for m in reminder_minutes(event, calendar)],
+    }
+
+
+def read_range(google, first, after):
+    lower, upper = local_midnight(first), local_midnight(after)
+    calendars = listed_calendars(google)
+
+    def read(calendar):
+        return calendar, google.pages("/calendars/%s/events" % urllib.parse.quote(calendar["id"], safe=""), {
+            "timeMin": lower.isoformat(), "timeMax": upper.isoformat(), "singleEvents": "true",
+            "maxResults": 2500, "showDeleted": "false"}, EVENT_LIMIT)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        answers = list(pool.map(read, calendars))
+    events = [e for calendar, raws in answers for e in (project_event(raw, calendar) for raw in raws) if e]
+    events.sort(key=lambda e: (e["start"], e["end"], e["title"]))
+    return {
+        "ok": True,
+        "account": next((c["id"] for c in calendars if c.get("primary")), ""),
+        "calendars": [{"id": c["id"], "name": calendar_name(c), "color": str(c.get("backgroundColor") or ""),
+                       "writable": c.get("accessRole") in ("writer", "owner")}
+                      for c in calendars],
+        "events": events,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Adding
+# ---------------------------------------------------------------------------
+
+def clock_time(value, what):
+    try:
+        return dt.time.fromisoformat(str(value))
+    except ValueError:
+        raise Failure("%s must be HH:MM." % what) from None
+
+
+def event_body(request):
+    """Google's event for a request. Checks everything before any network."""
+    if not isinstance(request, dict):
+        raise Failure("That request could not be read.")
+    title = str(request.get("title") or "").strip()[:256]
+    if not title:
+        raise Failure("Give the event a title.")
+    try:
+        day = dt.date.fromisoformat(str(request.get("date") or ""))
+    except ValueError:
+        raise Failure("The date must be YYYY-MM-DD.") from None
+    body = {"summary": title}
+    location = str(request.get("location") or "").strip()[:256]
+    if location:
+        body["location"] = location
+    if not request.get("start"):
+        body["start"] = {"date": day.isoformat()}
+        body["end"] = {"date": (day + dt.timedelta(days=1)).isoformat()}
+        return body
+    begins = dt.datetime.combine(day, clock_time(request["start"], "The start")).astimezone()
+    if request.get("end"):
+        ends = dt.datetime.combine(day, clock_time(request["end"], "The end")).astimezone()
+        if ends <= begins:
+            raise Failure("It has to end after it starts.")
+    else:
+        ends = begins + dt.timedelta(hours=1)
+    body["start"] = {"dateTime": begins.isoformat()}
+    body["end"] = {"dateTime": ends.isoformat()}
+    return body
+
+
+def create(google, request, body):
+    calendar_id = str(request.get("calendarId") or "primary")[:512]
+    quoted = urllib.parse.quote(calendar_id, safe="")
+    if google.call("/users/me/calendarList/" + quoted).get("accessRole") not in ("writer", "owner"):
+        raise Failure("You can only read that calendar.")
+    made = google.call("/calendars/%s/events" % quoted, {"sendUpdates": "none"}, body)
+    if not made.get("id"):
+        raise Failure("Google did not confirm the event.")
+    return {"ok": True, "id": str(made["id"]), "url": web_link(made.get("htmlLink"))}
+
+
+def read_request():
+    raw = sys.stdin.buffer.read(INPUT_LIMIT + 1)
+    if len(raw) > INPUT_LIMIT:
+        raise Failure("That request is too large.")
+    try:
+        return json.loads(raw)
+    except ValueError:
+        raise Failure("That request could not be read.") from None
+
+
+def parse_range(argv):
+    if len(argv) != 4 or argv[1] != "range":
+        raise Failure("Usage: calendar-google range FROM TO, or create < JSON")
+    try:
+        first, after = dt.date.fromisoformat(argv[2]), dt.date.fromisoformat(argv[3])
+    except ValueError:
+        raise Failure("Dates must be YYYY-MM-DD.") from None
+    if not 0 < (after - first).days <= MAX_DAYS:
+        raise Failure("That range is too long.")
+    return first, after
+
+
+def main(argv):
+    try:
+        if argv[1:] == ["create"]:
+            request = read_request()
+            body = event_body(request)
+            answer = create(Google(), request, body)
+        else:
+            first, after = parse_range(argv)
+            answer = read_range(Google(), first, after)
+    except Failure as error:
+        answer = {"ok": False, "code": error.code, "error": str(error)}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        # Never a traceback: it could carry an event's text.
+        answer = {"ok": False, "code": "error", "error": "Google's answer could not be read."}
+    print(json.dumps(answer, separators=(",", ":"), ensure_ascii=False))
+    return 0 if answer["ok"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
