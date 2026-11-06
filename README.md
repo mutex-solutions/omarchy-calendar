@@ -4,7 +4,7 @@ Google Calendar for Omarchy. A section inside
 [Deck](https://github.com/mutex-solutions/omarchy-deck), or a bar widget. The stock
 clock stays as it is.
 
-- **Tile:** what is next. At 2x2 or 4x1 it lists what is coming up.
+- **Tile:** a 4x1 tile lists the next two events, a 2x2 tile more. Half-size shows just the next.
 - **Deck's strip:** a notice from 15 minutes before a timed event until it ends.
 - **Reminders:** system notifications from each event's own Google reminders, with
   the panel closed.
@@ -50,7 +50,7 @@ omarchy plugin add https://github.com/mutex-solutions/omarchy-calendar
 { "id": "calendar", "title": "Calendar",
   "file": "/home/YOU/.config/omarchy/plugins/mutex-solutions.calendar/deck/Section.qml",
   "page": "/home/YOU/.config/omarchy/plugins/mutex-solutions.calendar/deck/Page.qml",
-  "span": 2, "rows": 2 }
+  "span": 4, "rows": 1 }
 ```
 
 `install-bundle.sh` in the Deck repo does this for every section at once. Deck 0.10.2

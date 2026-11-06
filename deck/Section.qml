@@ -35,11 +35,15 @@ Item {
 
     Item {
       id: body
+      signal holdStarted()
+      signal holdEnded()
       readonly property var st: s.state
       readonly property var list: st ? st.upcomingList : []
       readonly property double now: st ? st.now : Date.now()
       readonly property real rowH: Style.space(22)
       readonly property int capacity: Math.max(1, Math.floor((rows.height + Style.space(2)) / rowH))
+      // A 4x1 tile has room for two events or for a heading, and events win.
+      readonly property bool roomy: height > Style.space(100)
 
       MouseArea {
         id: pageArea
@@ -49,12 +53,17 @@ Item {
         onPressed: {
           held = false
           pageHold.restart()
+          body.holdStarted()
         }
         onReleased: {
           pageHold.stop()
+          body.holdEnded()
           if (!held) s.openPage()
         }
-        onCanceled: pageHold.stop()
+        onCanceled: {
+          pageHold.stop()
+          body.holdEnded()
+        }
 
         // A custom body does not get the host's hold gesture. Match it here.
         Timer {
@@ -62,6 +71,7 @@ Item {
           interval: 450
           onTriggered: {
             pageArea.held = true
+            body.holdEnded()
             s.openPage()
           }
         }
@@ -69,6 +79,7 @@ Item {
 
       Text {
         id: heading
+        visible: body.roomy
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
@@ -86,11 +97,11 @@ Item {
         id: rows
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.top: heading.bottom
+        anchors.top: body.roomy ? heading.bottom : parent.top
         anchors.bottom: parent.bottom
         anchors.leftMargin: Style.space(10)
         anchors.rightMargin: Style.space(10)
-        anchors.topMargin: Style.space(4)
+        anchors.topMargin: body.roomy ? Style.space(4) : Style.space(10)
         anchors.bottomMargin: Style.space(6)
         clip: true
 
@@ -98,7 +109,9 @@ Item {
           visible: body.list.length === 0
           anchors.left: parent.left
           anchors.right: parent.right
-          text: s.detail
+          anchors.verticalCenter: parent.verticalCenter
+          horizontalAlignment: Text.AlignHCenter
+          text: s.icon + "  " + s.detail
           color: Util.alpha(Color.foreground, 0.6)
           font.family: Style.font.family
           font.pixelSize: Style.font.caption

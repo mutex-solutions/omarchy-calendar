@@ -13,7 +13,8 @@ Item {
   property var host: null
 
   // Deck widens its card for a page that asks.
-  readonly property real preferredWidth: Style.space(860)
+  // The sign-in steps need no more than the usual width.
+  readonly property real preferredWidth: signIn ? 0 : Style.space(860)
 
   readonly property bool wide: width >= Style.space(620)
   readonly property real gap: Style.space(12)
