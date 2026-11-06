@@ -12,9 +12,8 @@ Item {
   property var state: null
   property var host: null
 
-  // Deck widens its card for a page that asks.
-  // The sign-in steps need no more than the usual width.
-  readonly property real preferredWidth: signIn ? 0 : Style.space(860)
+  // Deck widens its card for a page that asks. Only the month needs the room.
+  readonly property real preferredWidth: view === "month" ? Style.space(860) : 0
 
   readonly property bool wide: width >= Style.space(620)
   readonly property real gap: Style.space(12)
@@ -33,22 +32,26 @@ Item {
     return M.DAYS[d.getDay()] + " " + d.getDate() + " " + M.MONTHS[d.getMonth()]
   }
 
-  readonly property bool signIn: !!state && state.needsSignIn
-
-  implicitHeight: signIn ? signInCard.implicitHeight
+  implicitHeight: view === "account" ? accountView.implicitHeight
     : adding ? addForm.implicitHeight
     : (wide ? monthH : monthH + gap + agendaColumn.implicitHeight)
 
-  // The form is a view of its own; the host draws its crumb and back arrow.
+  // The form and the settings are views of their own; the host draws their
+  // crumb and back arrow.
   property string view: "month"
-  readonly property bool adding: view === "add" && !signIn
-  readonly property var trail: adding ? ["New event"] : []
-  readonly property bool canGoBack: adding
+  readonly property bool adding: view === "add"
+  readonly property var trail: adding ? ["New event"] : (view === "account" ? ["Settings"] : [])
+  readonly property bool canGoBack: view !== "month"
   function goBack() { view = "month" }
   function goTo(i) { if (i < 0) view = "month" }
 
   function openAdd() {
     if (!state) return
+    // Nowhere to save it yet, so go where that gets fixed.
+    if (state.needsSignIn) {
+      view = "account"
+      return
+    }
     titleField.text = ""
     dateField.text = state.selectedDay
     startField.text = "09:00"
@@ -306,17 +309,20 @@ Item {
     }
   }
 
-  // ---- not signed in -----------------------------------------------------
+  // ---- settings: the Google account ---------------------------------------
 
   Column {
-    id: signInCard
-    visible: page.signIn
+    id: accountView
+    visible: page.view === "account"
     width: parent.width
     spacing: Style.space(10)
 
+    readonly property string status: page.state ? page.state.status : "loading"
+    readonly property bool connected: !!page.state && page.state.hasData && status === "ok"
+
     Text {
       width: parent.width
-      text: page.state && page.state.status === "missing" ? "Install gws to read Google Calendar" : "Sign in to Google"
+      text: accountView.connected ? "Google connected" : "Connect Google"
       color: Color.foreground
       font.family: Style.font.family
       font.pixelSize: Style.font.title
@@ -326,8 +332,9 @@ Item {
 
     Text {
       width: parent.width
-      visible: !!page.state && page.state.status === "signin" && page.state.message !== ""
-      text: page.state ? page.state.message : ""
+      visible: text !== ""
+      text: accountView.connected ? (page.state.account || "")
+        : (page.state && accountView.status !== "missing" ? page.state.message : "")
       color: Util.alpha(Color.foreground, 0.6)
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
@@ -335,13 +342,56 @@ Item {
     }
 
     Repeater {
-      model: page.state && page.state.status === "missing"
-        ? ["sudo pacman -S googleworkspace-cli", "gws auth login -s calendar"]
-        : ["gws auth login -s calendar"]
+      model: accountView.connected && page.state ? page.state.calendars : []
+
+      Item {
+        required property var modelData
+        width: accountView.width
+        height: Style.space(24)
+
+        Rectangle {
+          id: calendarDot
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          width: Style.space(8)
+          height: width
+          radius: width / 2
+          color: modelData.color || Color.accent
+        }
+
+        Text {
+          anchors.left: calendarDot.right
+          anchors.leftMargin: Style.space(8)
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          text: modelData.name
+          color: Color.foreground
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          elide: Text.ElideRight
+        }
+      }
+    }
+
+    Text {
+      width: parent.width
+      visible: !accountView.connected
+      text: "gws needs your OAuth client at ~/.config/gws/client_secret.json"
+      color: Util.alpha(Color.foreground, 0.6)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.Wrap
+    }
+
+    Repeater {
+      model: accountView.connected ? []
+        : accountView.status === "missing"
+          ? ["sudo pacman -S googleworkspace-cli", "gws auth login -s calendar"]
+          : ["gws auth login -s calendar"]
 
       Item {
         required property string modelData
-        width: signInCard.width
+        width: accountView.width
         height: Style.space(30)
 
         Rectangle {
@@ -375,8 +425,8 @@ Item {
     }
 
     Chip {
-      text: "Check again"
-      strong: true
+      text: accountView.connected ? "Refresh" : "Check again"
+      strong: !accountView.connected
       onClicked: page.state.refresh()
     }
   }
@@ -483,7 +533,7 @@ Item {
 
   Item {
     id: monthBox
-    visible: !page.signIn && !page.adding
+    visible: page.view === "month"
     width: page.width - (page.wide ? page.agendaWidth + page.gap : 0)
     height: page.monthH
 
@@ -529,9 +579,10 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         // Says so when what is on screen is not current. Quiet when it is.
         text: !page.state || page.state.status === "ok" || page.state.status === "loading" ? ""
+          : page.state.needsSignIn ? "Not connected"
           : (page.state.status === "offline" ? "Offline" : page.state.message)
             + (page.state.hasData ? ", from " + M.clock(page.state.lastSync) : "")
-        color: Color.urgent
+        color: page.state && page.state.needsSignIn ? Util.alpha(Color.foreground, 0.5) : Color.urgent
         width: Math.min(implicitWidth, Style.space(200))
         elide: Text.ElideRight
         font.family: Style.font.family
@@ -559,10 +610,19 @@ Item {
 
       Chip {
         id: refreshChip
-        anchors.right: parent.right
+        anchors.right: settingsChip.left
+        anchors.rightMargin: Style.space(4)
         anchors.verticalCenter: parent.verticalCenter
         text: "Refresh"
         onClicked: page.state.refresh()
+      }
+
+      Chip {
+        id: settingsChip
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        text: "Settings"
+        onClicked: page.view = "account"
       }
     }
 
@@ -710,7 +770,7 @@ Item {
 
   Flickable {
     id: agenda
-    visible: !page.signIn && !page.adding
+    visible: page.view === "month"
     x: page.wide ? monthBox.width + page.gap : 0
     y: page.wide ? 0 : page.monthH + page.gap
     width: page.agendaWidth

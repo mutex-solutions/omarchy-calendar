@@ -40,7 +40,8 @@ Item {
   readonly property string label: next ? next.title : "Calendar"
   readonly property string detail: {
     if (next) return M.whenWords(next, now)
-    if (needsSignIn) return "Sign in to Google"
+    // No account is not a fault: it is still a calendar, so say what day it is.
+    if (needsSignIn) return M.dayLine(now)
     if (status === "loading") return "Loading"
     if (!hasData) return status === "offline" ? "Offline" : "Could not load"
     return "Nothing coming up"

@@ -101,6 +101,11 @@ function dayWord(ms, now) {
   return DAYS[d.getDay()] + " " + d.getDate() + " " + MONTHS[d.getMonth()].slice(0, 3)
 }
 
+function dayLine(ms) {
+  var d = new Date(ms)
+  return DAYS[d.getDay()] + " " + d.getDate() + " " + MONTHS[d.getMonth()]
+}
+
 function untilWords(ms, now) {
   var minutes = Math.max(1, Math.ceil((ms - now) / MINUTE))
   if (minutes < 60) return "in " + minutes + "m"

@@ -15,6 +15,9 @@ Edit and delete in Google for now: every event has an Open in Google button.
 
 ## Sign in
 
+The calendar works without an account: you get the month and today. Events come from
+Google, and the steps below are also under Settings in the page.
+
 Reading and adding go through [gws](https://github.com/googleworkspace/cli), which
 needs an OAuth client from your own Google Cloud project.
 

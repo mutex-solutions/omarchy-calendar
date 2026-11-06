@@ -39,7 +39,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(pageLoader.item ? pageLoader.item.preferredWidth : Style.space(860))
+    contentWidth: panel.fittedContentWidth(pageLoader.item && pageLoader.item.preferredWidth > 0 ? pageLoader.item.preferredWidth : Style.space(380))
     contentHeight: panel.fittedContentHeight(pageLoader.item ? pageLoader.item.implicitHeight : Style.space(360), Style.space(700))
 
     PanelKeyCatcher {

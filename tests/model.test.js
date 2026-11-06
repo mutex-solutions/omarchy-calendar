@@ -86,4 +86,5 @@ t("new event request", () => {
   assert.deepEqual(JSON.parse(JSON.stringify(r)), { title: "Dentist", date: "2026-11-20", location: "Clinic", calendarId: "c@x", start: "09:30" })
   assert.equal(M.newEventRequest("x", "2026-11-20", true, "", "").start, undefined)
 })
+t("day line", () => { assert.equal(M.dayLine(now), "Fri 6 November") })
 console.log("model ok: " + n + " tests")
