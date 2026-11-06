@@ -1,6 +1,6 @@
 # Third-party notices
 
-`scripts/calendar-google` is derived from `backends/google.py` in
+The Google half of `scripts/calendar` is derived from `backends/google.py` in
 [crmne/omarchy-calendar](https://github.com/crmne/omarchy-calendar) at commit
 `5135fb5`, cut down to reading and adding. Its licence:
 

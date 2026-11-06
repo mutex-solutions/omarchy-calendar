@@ -40,18 +40,15 @@ Item {
   // crumb and back arrow.
   property string view: "month"
   readonly property bool adding: view === "add"
-  readonly property var trail: adding ? ["New event"] : (view === "account" ? ["Settings"] : [])
+  readonly property var trail: adding ? [editId !== "" ? "Edit event" : "New event"]
+    : (view === "account" ? ["Settings"] : [])
   readonly property bool canGoBack: view !== "month"
   function goBack() { view = "month" }
   function goTo(i) { if (i < 0) view = "month" }
 
   function openAdd() {
     if (!state) return
-    // Nowhere to save it yet, so go where that gets fixed.
-    if (state.needsSignIn) {
-      view = "account"
-      return
-    }
+    editId = ""
     titleField.text = ""
     dateField.text = state.selectedDay
     startField.text = "09:00"
@@ -65,17 +62,40 @@ Item {
     titleField.takeFocus()
   }
 
+  function openEdit(event) {
+    if (!state) return
+    editId = event.id
+    titleField.text = event.title
+    dateField.text = M.dayKey(new Date(event.start))
+    allDay = event.allDay === true
+    startField.text = allDay ? "09:00" : M.clock(event.start)
+    endField.text = allDay ? "" : M.clock(event.end)
+    locationField.text = event.location || ""
+    formError = ""
+    state.createError = ""
+    view = "add"
+    titleField.takeFocus()
+  }
+
   function saveNew() {
     if (!state || state.creating) return
     var request = M.newEventRequest(titleField.text, dateField.text.trim(), allDay,
-      startField.text.trim(), endField.text.trim(), locationField.text, calendarId)
+      startField.text.trim(), endField.text.trim(), locationField.text, editId !== "" ? "" : calendarId)
     formError = request.error || ""
-    if (!request.error) state.createEvent(request)
+    if (request.error) return
+    if (editId !== "") {
+      request.id = editId
+      state.updateEvent(request)
+    } else {
+      state.createEvent(request)
+    }
   }
 
   property bool allDay: false
   property string formError: ""
   property string calendarId: ""
+  // The local event being edited, or empty for a new one.
+  property string editId: ""
 
   Connections {
     target: page.state
@@ -180,6 +200,8 @@ Item {
     readonly property bool open: !!event && !!page.state && page.state.openEventId === rowKey
     readonly property string rowKey: event ? (showDay ? "soon:" : "day:") + event.id : ""
     readonly property real detailH: open ? details.implicitHeight + Style.space(6) : 0
+    property bool deleteArmed: false
+    onOpenChanged: deleteArmed = false
 
     width: parent ? parent.width : 0
     height: Style.space(28) + detailH
@@ -304,6 +326,26 @@ Item {
           visible: !!row.event && row.event.url !== ""
           text: "Open in Google"
           onClicked: page.state.openLink(row.event.url)
+        }
+
+        // Local events have no Google to go and change them in.
+        Chip {
+          id: editChip
+          visible: !!row.event && row.event.local === true
+          text: "Edit"
+          onClicked: page.openEdit(row.event)
+        }
+
+        Chip {
+          anchors.left: editChip.right
+          anchors.leftMargin: Style.space(6)
+          visible: editChip.visible
+          text: row.deleteArmed ? "Really delete" : "Delete"
+          strong: row.deleteArmed
+          onClicked: {
+            if (row.deleteArmed) page.state.deleteEvent(row.event.id)
+            else row.deleteArmed = true
+          }
         }
       }
     }
@@ -498,7 +540,7 @@ Item {
     Flow {
       width: parent.width
       spacing: Style.space(4)
-      visible: !!page.state && page.state.writableCalendars.length > 1
+      visible: page.editId === "" && !!page.state && page.state.writableCalendars.length > 1
 
       Repeater {
         model: page.state ? page.state.writableCalendars : []
@@ -523,7 +565,7 @@ Item {
     }
 
     Chip {
-      text: page.state && page.state.creating ? "Adding" : "Add event"
+      text: page.state && page.state.creating ? "Saving" : (page.editId !== "" ? "Save" : "Add event")
       strong: true
       onClicked: page.saveNew()
     }

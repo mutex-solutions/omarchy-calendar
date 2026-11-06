@@ -5,24 +5,27 @@ import "Model.js" as M
 
 // Calendar state. One instance, shared by the tile and the page.
 //
-// Google is reached only through scripts/calendar-google. Two windows are kept:
+// Events come from scripts/calendar: local ones always, Google's when it is
+// connected. Two windows are kept:
 // `events`, yesterday to six weeks ahead, which feeds the tile, the notice and
 // the reminders; and one month at a time for the page. Sections stay loaded
 // with the panel closed, which is what lets reminders fire from here.
 Item {
   id: s
 
-  readonly property string helper: String(Qt.resolvedUrl("scripts/calendar-google")).replace("file://", "")
+  readonly property string helper: String(Qt.resolvedUrl("scripts/calendar")).replace("file://", "")
   readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/deck"
   readonly property int refreshMs: 300000
 
-  // loading, ok, missing (no gws), signin, offline, error
+  // Google's state: loading, ok, missing (no gws), signin, offline, error
   property string status: "loading"
   property string message: ""
   property string account: ""
   property var calendars: []
   property var events: []
+  // When Google last answered. Zero until then; local events do not need it.
   property double lastSync: 0
+  property bool loaded: false
   property double now: Date.now()
   readonly property bool hasData: lastSync > 0
   readonly property bool needsSignIn: !hasData && (status === "missing" || status === "signin")
@@ -43,7 +46,7 @@ Item {
     // No account is not a fault: it is still a calendar, so say what day it is.
     if (needsSignIn) return M.dayLine(now)
     if (status === "loading") return "Loading"
-    if (!hasData) return status === "offline" ? "Offline" : "Could not load"
+    if (!loaded) return status === "offline" ? "Offline" : "Could not load"
     return "Nothing coming up"
   }
 
@@ -144,8 +147,9 @@ Item {
   }
 
   function noteResult(answer) {
-    status = answer.ok ? "ok" : String(answer.code || "error")
-    message = answer.ok ? "" : String(answer.error || "")
+    var google = answer.ok ? (answer.google || { ok: true }) : answer
+    status = google.ok ? "ok" : String(google.code || "error")
+    message = google.ok ? "" : String(google.error || "")
   }
 
   Process {
@@ -156,10 +160,13 @@ Item {
         var answer = s.parseAnswer(text)
         s.noteResult(answer)
         if (!answer.ok) return
-        s.account = String(answer.account || "")
-        s.calendars = answer.calendars || []
-        s.events = answer.events || []
-        s.lastSync = Date.now()
+        s.events = M.mergeEvents(s.events, answer)
+        s.calendars = M.mergeCalendars(s.calendars, answer)
+        if (answer.google && answer.google.ok) {
+          s.account = String(answer.account || "")
+          s.lastSync = Date.now()
+        }
+        s.loaded = true
         s.checkReminders()
       }
     }
@@ -175,7 +182,8 @@ Item {
         s.noteResult(answer)
         if (answer.ok) {
           var next = Object.assign({}, s.months)
-          next[monthProc.key] = { events: answer.events || [], at: Date.now() }
+          var known = s.months[monthProc.key]
+          next[monthProc.key] = { events: M.mergeEvents(known ? known.events : s.events, answer), at: Date.now() }
           s.months = next
         }
         if (s.monthPending) monthRetry.restart()
@@ -190,7 +198,7 @@ Item {
     onTriggered: s.fetchMonth()
   }
 
-  // ---- adding an event ---------------------------------------------------
+  // ---- changing events ---------------------------------------------------
 
   property bool creating: false
   property string createError: ""
@@ -198,19 +206,23 @@ Item {
   readonly property var writableCalendars: calendars.filter(function(c) { return c.writable === true })
 
   // The request goes over stdin, so event text is never in a process list.
-  function createEvent(request) {
+  function runChange(action, request) {
     if (createProc.running) return
     createProc.request = request
+    createProc.command = [helper, action]
     createError = ""
     creating = true
     createProc.stdinEnabled = true
     createProc.running = true
   }
 
+  function createEvent(request) { runChange("create", request) }
+  function updateEvent(request) { runChange("update", request) }
+  function deleteEvent(id) { runChange("delete", { id: id }) }
+
   Process {
     id: createProc
     property var request: null
-    command: [s.helper, "create"]
     onStarted: {
       write(JSON.stringify(request))
       stdinEnabled = false
@@ -221,11 +233,12 @@ Item {
         var answer = s.parseAnswer(text)
         s.creating = false
         if (!answer.ok) {
-          s.createError = String(answer.error || "Could not add the event.")
+          s.createError = String(answer.error || "That did not work.")
           return
         }
-        s.jumpTo(createProc.request.date)
-        s.created(createProc.request.date)
+        if (createProc.request.date) s.jumpTo(createProc.request.date)
+        s.openEventId = ""
+        s.created(String(createProc.request.date || ""))
         createdSync.restart()
       }
     }
@@ -269,7 +282,7 @@ Item {
   }
 
   function checkReminders() {
-    if (!firedReady || !hasData) return
+    if (!firedReady || !loaded) return
     var due = M.dueReminders(events, Date.now(), fired)
     if (due.mark.length === 0) return
     var kept = M.pruneFired(fired, Date.now())

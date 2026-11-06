@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "mutex-solutions.calendar",
   "name": "Calendar",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "author": "mutex-solutions",
   "license": "MIT",
   "description": "Google Calendar for Omarchy: upcoming events, reminders and a month view, as a Deck section or a bar widget.",

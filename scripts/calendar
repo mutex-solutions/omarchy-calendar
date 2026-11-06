@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""Google Calendar helper for the Calendar plugin. State.qml runs it, and so can
-an agent or a script.
+"""Calendar helper for the Calendar plugin. State.qml runs it, and so can an agent
+or a script. Local events work with no account at all; Google is optional.
 
-  calendar-google range FROM TO    every listed calendar, FROM <= day < TO
-  calendar-google create < JSON    add one event
+  calendar range FROM TO     local events and Google's, FROM <= day < TO
+  calendar create < JSON     add one event
+  calendar update < JSON     change a local event, by "id"
+  calendar delete < JSON     remove a local event, by "id"
 
 create reads {"title", "date": "YYYY-MM-DD", "start": "HH:MM", "end": "HH:MM",
-"location", "calendarId"} from stdin; only title and date are required. No start
-makes it all-day, no end makes it an hour, no calendarId uses the primary one.
-What was typed arrives on stdin, never as an argument. Guests are not supported,
-so nobody is ever emailed.
+"location", "calendarId", "remind": minutes} from stdin; only title and date are
+required. No start makes it all-day, no end makes it an hour. No calendarId keeps
+it local; "primary" or a calendar's id sends it to Google. A timed local event
+reminds 10 minutes before unless "remind" says otherwise. What was typed arrives
+on stdin, never as an argument. Guests are not supported, so nobody is ever emailed.
 
-Prints one JSON object on stdout, always:
+Prints one JSON object on stdout, always. A Google failure does not fail a range:
 
-  {"ok": true, "account": ..., "calendars": [...], "events": [...]}
+  {"ok": true, "account": ..., "calendars": [...], "events": [...],
+   "google": {"ok": false, "code": "missing|signin|offline|error", "error": ...}}
   {"ok": true, "id": ..., "url": ...}
-  {"ok": false, "code": "missing|signin|offline|error", "error": ...}
+  {"ok": false, "code": "error", "error": ...}
 
 Signing in is gws's, the Google Workspace CLI. Its saved sign-in comes from
 `gws auth export --unmasked` over a pipe, is turned into an access token here,
@@ -27,13 +31,16 @@ reading and adding. See THIRD_PARTY_NOTICES.md.
 """
 import concurrent.futures
 import datetime as dt
+import fcntl
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 API = "https://www.googleapis.com/calendar/v3"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -42,6 +49,9 @@ EVENT_LIMIT = 4000
 CALENDAR_LIMIT = 100
 MAX_DAYS = 100
 INPUT_LIMIT = 64 * 1024
+LOCAL_ID = "local"
+LOCAL_CALENDAR = {"id": LOCAL_ID, "summary": "Local"}
+LOCAL_REMIND = 10
 TIMEOUT = 20
 
 
@@ -284,6 +294,7 @@ def project_event(event, calendar):
     declined = any(isinstance(a, dict) and a.get("self") and a.get("responseStatus") == "declined"
                    for a in event.get("attendees") or [])
     return {
+        "local": calendar["id"] == LOCAL_ID,
         "id": calendar["id"] + "/" + event["id"],
         "title": str(event.get("summary") or "(untitled)"),
         "allDay": all_day, "start": millis(begins), "end": millis(ends),
@@ -296,7 +307,7 @@ def project_event(event, calendar):
     }
 
 
-def read_range(google, first, after):
+def read_google(google, first, after):
     lower, upper = local_midnight(first), local_midnight(after)
     calendars = listed_calendars(google)
 
@@ -308,15 +319,153 @@ def read_range(google, first, after):
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         answers = list(pool.map(read, calendars))
     events = [e for calendar, raws in answers for e in (project_event(raw, calendar) for raw in raws) if e]
-    events.sort(key=lambda e: (e["start"], e["end"], e["title"]))
     return {
-        "ok": True,
         "account": next((c["id"] for c in calendars if c.get("primary")), ""),
         "calendars": [{"id": c["id"], "name": calendar_name(c), "color": str(c.get("backgroundColor") or ""),
                        "writable": c.get("accessRole") in ("writer", "owner")}
                       for c in calendars],
         "events": events,
     }
+
+
+def read_range(first, after):
+    """Local events always; Google's when it answers. Google being absent or
+    down is a fact to report, not a reason to lose the local ones."""
+    events = read_local(first, after)
+    try:
+        google = read_google(Google(), first, after)
+        status = {"ok": True}
+    except Failure as error:
+        google = {"account": "", "calendars": [], "events": []}
+        status = {"ok": False, "code": error.code, "error": str(error)}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        # Never a traceback: it could carry an event's text.
+        google = {"account": "", "calendars": [], "events": []}
+        status = {"ok": False, "code": "error", "error": "Google's answer could not be read."}
+    events += google["events"]
+    events.sort(key=lambda e: (e["start"], e["end"], e["title"]))
+    return {
+        "ok": True, "account": google["account"], "google": status, "events": events,
+        "calendars": google["calendars"] + [{"id": LOCAL_ID, "name": LOCAL_CALENDAR["summary"],
+                                              "color": "", "writable": True}],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Local events, in Google's event shape so one projection serves both
+# ---------------------------------------------------------------------------
+
+def local_path():
+    base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "deck", "calendar-events.json")
+
+
+def load_local():
+    try:
+        with open(local_path(), "rb") as handle:
+            stored = json.loads(handle.read())
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError):
+        # Refusing is what keeps a damaged file from being overwritten by the next save.
+        raise Failure("The local events file could not be read: " + local_path()) from None
+    events = stored.get("events") if isinstance(stored, dict) else None
+    if not isinstance(events, list):
+        raise Failure("The local events file could not be read: " + local_path())
+    return [e for e in events if isinstance(e, dict)]
+
+
+def save_local(events):
+    path = local_path()
+    descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".calendar-events.")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "events": events}, handle, ensure_ascii=False, indent=1)
+        os.replace(temporary, path)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise Failure("The local events file could not be written.") from None
+
+
+class LocalLock:
+    """The panel and an agent can both change the file."""
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(local_path()), exist_ok=True)
+        self.handle = open(local_path() + ".lock", "w")
+        fcntl.flock(self.handle, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *_):
+        self.handle.close()
+
+
+def read_local(first, after):
+    lower, upper = local_midnight(first), local_midnight(after)
+    out = []
+    for raw in load_local():
+        try:
+            begins, ends, _ = event_bounds(raw)
+            event = project_event(raw, LOCAL_CALENDAR)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if event and begins < upper and (ends > lower or (ends == begins and begins >= lower)):
+            out.append(event)
+    return out
+
+
+def local_reminders(request, body):
+    remind = request.get("remind")
+    if remind is None:
+        remind = LOCAL_REMIND if "dateTime" in body["start"] else None
+    if remind is None:
+        return {"useDefault": False, "overrides": []}
+    if isinstance(remind, bool) or not isinstance(remind, int) or not 0 <= remind <= 40320:
+        raise Failure("remind must be minutes before the event.")
+    return {"useDefault": False, "overrides": [{"method": "popup", "minutes": remind}]}
+
+
+def local_create(request, body):
+    body["reminders"] = local_reminders(request, body)
+    body["id"] = uuid.uuid4().hex
+    with LocalLock():
+        events = load_local()
+        events.append(body)
+        save_local(events)
+    return {"ok": True, "id": LOCAL_ID + "/" + body["id"], "url": ""}
+
+
+def local_id(request):
+    value = str(request.get("id") or "") if isinstance(request, dict) else ""
+    if not value.startswith(LOCAL_ID + "/"):
+        raise Failure("Only local events can be changed here. Change this one in Google.")
+    return value[len(LOCAL_ID) + 1:]
+
+
+def local_update(request):
+    target = local_id(request)
+    body = event_body(request)
+    body["reminders"] = local_reminders(request, body)
+    body["id"] = target
+    with LocalLock():
+        events = load_local()
+        if not any(e.get("id") == target for e in events):
+            raise Failure("That event is gone.")
+        save_local([body if e.get("id") == target else e for e in events])
+    return {"ok": True, "id": LOCAL_ID + "/" + target, "url": ""}
+
+
+def local_delete(request):
+    target = local_id(request)
+    with LocalLock():
+        events = load_local()
+        if not any(e.get("id") == target for e in events):
+            raise Failure("That event is gone.")
+        save_local([e for e in events if e.get("id") != target])
+    return {"ok": True, "id": LOCAL_ID + "/" + target, "url": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -361,8 +510,12 @@ def event_body(request):
     return body
 
 
-def create(google, request, body):
-    calendar_id = str(request.get("calendarId") or "primary")[:512]
+def create(request):
+    body = event_body(request)
+    calendar_id = str(request.get("calendarId") or LOCAL_ID)[:512]
+    if calendar_id == LOCAL_ID:
+        return local_create(request, body)
+    google = Google()
     quoted = urllib.parse.quote(calendar_id, safe="")
     if google.call("/users/me/calendarList/" + quoted).get("accessRole") not in ("writer", "owner"):
         raise Failure("You can only read that calendar.")
@@ -384,7 +537,7 @@ def read_request():
 
 def parse_range(argv):
     if len(argv) != 4 or argv[1] != "range":
-        raise Failure("Usage: calendar-google range FROM TO, or create < JSON")
+        raise Failure("Usage: calendar range FROM TO, or create, update or delete < JSON")
     try:
         first, after = dt.date.fromisoformat(argv[2]), dt.date.fromisoformat(argv[3])
     except ValueError:
@@ -397,17 +550,19 @@ def parse_range(argv):
 def main(argv):
     try:
         if argv[1:] == ["create"]:
-            request = read_request()
-            body = event_body(request)
-            answer = create(Google(), request, body)
+            answer = create(read_request())
+        elif argv[1:] == ["update"]:
+            answer = local_update(read_request())
+        elif argv[1:] == ["delete"]:
+            answer = local_delete(read_request())
         else:
             first, after = parse_range(argv)
-            answer = read_range(Google(), first, after)
+            answer = read_range(first, after)
     except Failure as error:
         answer = {"ok": False, "code": error.code, "error": str(error)}
     except (KeyError, TypeError, ValueError, AttributeError):
         # Never a traceback: it could carry an event's text.
-        answer = {"ok": False, "code": "error", "error": "Google's answer could not be read."}
+        answer = {"ok": False, "code": "error", "error": "That answer could not be read."}
     print(json.dumps(answer, separators=(",", ":"), ensure_ascii=False))
     return 0 if answer["ok"] else 1
 

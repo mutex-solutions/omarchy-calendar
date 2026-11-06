@@ -87,4 +87,12 @@ t("new event request", () => {
   assert.equal(M.newEventRequest("x", "2026-11-20", true, "", "").start, undefined)
 })
 t("day line", () => { assert.equal(M.dayLine(now), "Fri 6 November") })
+t("a failed Google read keeps Google's events and refreshes local", () => {
+  const old = [ev({ id: "g", start: 5, end: 6 }), ev({ id: "l", local: true, start: 1, end: 2 })]
+  const fresh = [ev({ id: "l2", local: true, start: 3, end: 4 })]
+  assert.deepEqual(M.mergeEvents(old, { events: fresh, google: { ok: false } }).map(e => e.id), ["l2", "g"])
+  assert.deepEqual(M.mergeEvents(old, { events: fresh, google: { ok: true } }).map(e => e.id), ["l2"])
+  const cals = M.mergeCalendars([{ id: "me" }, { id: "local" }], { calendars: [{ id: "local" }], google: { ok: false } })
+  assert.deepEqual(cals.map(c => c.id), ["me", "local"])
+})
 console.log("model ok: " + n + " tests")

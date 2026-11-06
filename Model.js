@@ -1,7 +1,7 @@
 .pragma library
 
 // Pure date and event logic, so it can be tested under plain node. Events come
-// from scripts/calendar-google: `start` and `end` are epoch milliseconds, and an
+// from scripts/calendar: `start` and `end` are epoch milliseconds, and an
 // all-day event runs from local midnight to the local midnight after its last day.
 
 var MINUTE = 60000
@@ -151,6 +151,22 @@ function newEventRequest(title, date, allDay, start, end, location, calendarId) 
     request.end = pad(Number(end.split(":")[0])) + ":" + end.split(":")[1]
   }
   return request
+}
+
+// A failed Google read must not blank what was already known of Google, and a
+// helper answer always has the local events fresh. So keep the old Google half.
+function mergeEvents(old, answer) {
+  var fresh = answer.events || []
+  if (answer.google && answer.google.ok) return fresh
+  var kept = (old || []).filter(function(e) { return !e.local })
+  return kept.concat(fresh).sort(function(a, b) { return a.start - b.start })
+}
+
+function mergeCalendars(old, answer) {
+  var fresh = answer.calendars || []
+  if (answer.google && answer.google.ok) return fresh
+  var kept = (old || []).filter(function(c) { return c.id !== "local" })
+  return kept.concat(fresh)
 }
 
 // Deck's strip: from a quarter of an hour before a timed event until it ends.

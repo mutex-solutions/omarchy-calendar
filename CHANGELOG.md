@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- **Local events.** Add, edit and delete events with no account, from the page or
+  `scripts/calendar`. They remind and show like any other. Google stays optional, and
+  losing it no longer hides what is already known.
+- The helper is now `scripts/calendar`.
+
 ## 0.1.2
 
 - The calendar shows without a Google account. Connecting moved to Settings in the

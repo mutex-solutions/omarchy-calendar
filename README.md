@@ -10,13 +10,13 @@ clock stays as it is.
   the panel closed.
 - **Page:** tap the tile for a full month, the chosen day, what is coming up, and
   New to add an event.
-
-Edit and delete in Google for now: every event has an Open in Google button.
+- **Local events:** work with no account, and can be edited and deleted from the page.
+  Google events are added here and changed in Google, through Open in Google.
 
 ## Sign in
 
-The calendar works without an account: you get the month and today. Events come from
-Google, and the steps below are also under Settings in the page.
+This is optional: without it you have the month and local events. The steps below are
+also under Settings in the page.
 
 Reading and adding go through [gws](https://github.com/googleworkspace/cli), which
 needs an OAuth client from your own Google Cloud project.
@@ -66,20 +66,27 @@ Run the Deck section or the bar widget, not both: each would send its own remind
 The panel and an agent share one helper, so an agent needs nothing else:
 
 ```bash
-H=~/.config/omarchy/plugins/mutex-solutions.calendar/scripts/calendar-google
+H=~/.config/omarchy/plugins/mutex-solutions.calendar/scripts/calendar
 $H range 2026-11-06 2026-11-13
 echo '{"title":"Dentist","date":"2026-11-20","start":"09:30","end":"10:15"}' | $H create
+echo '{"id":"local/abc","title":"Dentist","date":"2026-11-21","start":"10:00"}' | $H update
+echo '{"id":"local/abc"}' | $H delete
 ```
 
 Only `title` and `date` are required. No `start` makes it all-day, no `end` makes it an
-hour. `location` and `calendarId` are optional. The panel picks an event up at its next
-refresh, within 5 minutes.
+hour. No `calendarId` keeps it local; `"calendarId":"primary"` sends it to Google. A timed
+local event reminds 10 minutes before unless `"remind"` gives other minutes. `update` and
+`delete` are for local events only. The panel picks changes up at its next refresh, within
+5 minutes.
+
+Local events live in `~/.local/share/deck/calendar-events.json`. If that file is damaged,
+the helper reports it and refuses to write, so nothing overwrites it.
 
 ## How it is built
 
 | File | Role |
 | --- | --- |
-| `scripts/calendar-google` | talks to Google; prints one JSON object |
+| `scripts/calendar` | local events and Google; prints one JSON object |
 | `Model.js` | dates, ordering, reminders, tested under node |
 | `State.qml` | the single state object, the polling and the reminders |
 | `deck/Section.qml` | Deck adapter and the list tiles |
@@ -114,7 +121,7 @@ omarchy plugin add https://github.com/mutex-solutions/omarchy-calendar
 # register it as above, or use Deck's Sections page
 # sign in as above
 omarchy restart shell
-H=~/.config/omarchy/plugins/mutex-solutions.calendar/scripts/calendar-google
+H=~/.config/omarchy/plugins/mutex-solutions.calendar/scripts/calendar
 $H range "$(date +%F)" "$(date -d +7days +%F)" | jq '{ok, n: (.events | length)}'
 ```
 
@@ -122,6 +129,6 @@ Tests: `bash scripts/validate.sh`.
 
 ## Licence
 
-MIT. `scripts/calendar-google` is derived from
+MIT. The Google half of `scripts/calendar` is derived from
 [crmne/omarchy-calendar](https://github.com/crmne/omarchy-calendar); see
 `THIRD_PARTY_NOTICES.md`.
