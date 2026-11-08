@@ -36,6 +36,25 @@ Then one of:
 gws auth login -s calendar
 ```
 
+### More than one account
+
+The first account is gws's own sign-in. Add each further account as a gws sign-in
+in a directory of its own under `~/.config/gws-accounts/` (the directory name is
+the account's key):
+
+```bash
+GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/.config/gws-accounts/work gws auth login -s calendar
+```
+
+Settings in the page lists every account and has this command ready to copy (rename
+`work`). The page then shows a row of account chips: **All**, or one account. In All,
+events are coloured by account; with one chosen, by Google's calendar colours.
+The tile follows the choice; reminders and the notice cover every account. To
+remove an account, delete its directory.
+
+On Google's consent screen Calendar is a **checkbox**: left unticked, the sign-in
+still succeeds but can read nothing, and the page says to sign in again.
+
 **Publish the consent screen to production.** Google expires refresh tokens after 7
 days while an app is in Testing, and Calendar would ask you to sign in again every
 week. For read-only, sign in with `--readonly` as well; New then reports that the
@@ -74,10 +93,11 @@ echo '{"id":"local/abc"}' | $H delete
 ```
 
 Only `title` and `date` are required. No `start` makes it all-day, no `end` makes it an
-hour. No `calendarId` keeps it local; `"calendarId":"primary"` sends it to Google. A timed
-local event reminds 10 minutes before unless `"remind"` gives other minutes. `update` and
-`delete` are for local events only. The panel picks changes up at its next refresh, within
-5 minutes.
+hour. With neither `calendarId` nor `account` it stays local; `"calendarId":"primary"`
+sends it to Google, and `account` (a key: `default` or a directory name under
+`~/.config/gws-accounts/`) picks which account, else the first. A timed local event
+reminds 10 minutes before unless `"remind"` gives other minutes. `update` and `delete` are
+for local events only. The panel picks changes up at its next refresh, within 5 minutes.
 
 Local events live in `~/.local/share/deck/calendar-events.json`. If that file is damaged,
 the helper reports it and refuses to write, so nothing overwrites it.

@@ -7,6 +7,7 @@ loader = importlib.machinery.SourceFileLoader("calendar_helper", path)
 spec = importlib.util.spec_from_loader("calendar_helper", loader)
 cg = importlib.util.module_from_spec(spec)
 loader.exec_module(cg)
+REAL_ACCOUNT_DIRS = cg.account_dirs
 
 CALS = {"items": [
     {"id": "me@x", "summary": "Me", "primary": True, "selected": True, "accessRole": "owner",
@@ -25,7 +26,13 @@ EVENTS = {"items": [
      "end": {"dateTime": "2026-11-06T11:00:00+07:00"},
      "attendees": [{"self": True, "responseStatus": "declined"}]},
 ]}
-MODE = {"status": 200, "reason": "", "tokens": [], "posts": []}
+# A second account, told apart by its access token.
+CALS2 = {"items": [
+    {"id": "you@y", "summary": "Work", "primary": True, "selected": True, "accessRole": "writer",
+     "backgroundColor": "#654321"},
+    {"id": "me@x", "summary": "Shared into both", "selected": True, "accessRole": "reader"},
+]}
+MODE = {"status": 200, "reason": "", "tokens": [], "posts": [], "broken": ""}
 
 
 class Fake(http.server.BaseHTTPRequestHandler):
@@ -37,8 +44,11 @@ class Fake(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
         if self.path.startswith("/token"):
-            return self.reply(200, {"access_token": "tok"})
-        MODE["posts"].append((self.path, json.loads(raw)))
+            refresh = dict(x.split("=") for x in raw.decode().split("&"))["refresh_token"]
+            if refresh == MODE["broken"]:
+                return self.reply(400, {"error": "invalid_grant"})
+            return self.reply(200, {"access_token": "tok" if refresh == "c" else "tok-" + refresh})
+        MODE["posts"].append((self.path, json.loads(raw), self.headers.get("Authorization")))
         self.reply(200, {"id": "new1", "htmlLink": "https://calendar.google.com/new1"})
     def do_GET(self):
         MODE["tokens"].append(self.headers.get("Authorization"))
@@ -46,7 +56,8 @@ class Fake(http.server.BaseHTTPRequestHandler):
             return self.reply(MODE["status"], {"error": {"errors": [{"reason": MODE["reason"]}]}, "leak": "SECRET-TEXT"})
         if "/users/me/calendarList/" in self.path:
             return self.reply(200, {"accessRole": "reader" if "readonly" in self.path else "owner"})
-        self.reply(200, CALS if "calendarList" in self.path else EVENTS)
+        second = self.headers.get("Authorization") == "Bearer tok-c2"
+        self.reply(200, (CALS2 if second else CALS) if "calendarList" in self.path else EVENTS)
 
 
 class Helper(unittest.TestCase):
@@ -56,13 +67,20 @@ class Helper(unittest.TestCase):
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
         base = "http://127.0.0.1:%d" % cls.server.server_port
         cg.API, cg.TOKEN_URL = base, base + "/token"
-        cg.credentials = lambda: {"client_id": "a", "client_secret": "b", "refresh_token": "c"}
+        # None is the first account; "/x/work" an extra one in its own directory.
+        cg.credentials = lambda d=None: {"client_id": "a", "client_secret": "b",
+                                         "refresh_token": "c" if d is None else "c2"}
 
     def setUp(self):
         MODE.update(status=200, reason="", tokens=[], posts=[])
         self.data = tempfile.TemporaryDirectory()
         os.environ["XDG_DATA_HOME"] = self.data.name
         self.addCleanup(self.data.cleanup)
+        MODE.update(status=200, reason="", tokens=[], posts=[], broken="")
+        cg.account_dirs = lambda: [None]
+
+    def two_accounts(self):
+        cg.account_dirs = lambda: [None, "/x/work"]
 
     def run_it(self, *args):
         out = io.StringIO()
@@ -117,7 +135,7 @@ class Helper(unittest.TestCase):
         rc, a = self.create({"title": " Dentist ", "date": "2026-11-20", "start": "09:30", "end": "10:15",
                              "location": "Clinic", "calendarId": "primary"})
         self.assertEqual((rc, a["ok"], a["id"]), (0, True, "new1"))
-        path, body = MODE["posts"][0]
+        path, body, _ = MODE["posts"][0]
         self.assertIn("/calendars/primary/events", path)
         self.assertIn("sendUpdates=none", path)
         self.assertEqual(body["summary"], "Dentist")
@@ -143,7 +161,7 @@ class Helper(unittest.TestCase):
         self.assertEqual(MODE["posts"], [])
 
     def offline(self):
-        def fail():
+        def fail(config_dir=None):
             raise cg.Failure("gws is not installed.", "missing")
         saved, cg.credentials = cg.credentials, fail
         self.addCleanup(setattr, cg, "credentials", saved)
@@ -213,13 +231,80 @@ class Helper(unittest.TestCase):
         self.assertIn("Local one", titles)
         self.assertIn("Standup", titles)
 
+    def test_two_accounts_are_tagged_and_merged(self):
+        self.two_accounts()
+        rc, a, _ = self.run_it("range", "2026-11-01", "2026-12-01")
+        self.assertEqual(rc, 0)
+        self.assertEqual([(x["key"], x["email"], x["ok"]) for x in a["accounts"]],
+                         [("default", "me@x", True), ("work", "you@y", True)])
+        # me@x is listed by both accounts: shown once, from the first.
+        self.assertEqual([(c["id"], c["account"]) for c in a["calendars"]],
+                         [("me@x", "default"), ("you@y", "work"), ("local", "local")])
+        self.assertEqual({e["account"] for e in a["events"]}, {"default", "work"})
+        self.assertEqual(a["google"], {"ok": True})
+        self.assertEqual(len({e["id"] for e in a["events"]}), len(a["events"]))
+        self.assertEqual(a["account"], "me@x")
+
+    def test_one_account_failing_keeps_the_other(self):
+        self.two_accounts()
+        MODE["broken"] = "c2"
+        rc, a, _ = self.run_it("range", "2026-11-01", "2026-12-01")
+        self.assertEqual((rc, a["ok"]), (0, True))
+        self.assertEqual([(x["key"], x["ok"], x.get("code")) for x in a["accounts"]],
+                         [("default", True, None), ("work", False, "signin")])
+        self.assertEqual({e["account"] for e in a["events"]}, {"default"})
+
+    def test_every_account_failing_is_a_google_failure_not_a_lost_answer(self):
+        self.two_accounts()
+        self.create({"title": "Mine", "date": "2026-11-06"})
+        MODE.update(status=401)
+        rc, a, _ = self.run_it("range", "2026-11-01", "2026-12-01")
+        self.assertEqual((rc, a["ok"], a["google"]["ok"], a["google"]["code"]), (0, True, False, "signin"))
+        self.assertEqual([x["ok"] for x in a["accounts"]], [False, False])
+        self.assertEqual([e["title"] for e in a["events"]], ["Mine"])
+
+    def test_create_goes_to_the_named_account(self):
+        self.two_accounts()
+        rc, a = self.create({"title": "Sync", "date": "2026-11-20", "calendarId": "you@y", "account": "work"})
+        self.assertEqual((rc, a["ok"]), (0, True))
+        path, _, auth = MODE["posts"][0]
+        self.assertIn("/calendars/you%40y/events", path)
+        self.assertEqual(auth, "Bearer tok-c2")
+        MODE["posts"].clear()
+        rc, a = self.create({"title": "x", "date": "2026-11-20", "account": "nobody"})
+        self.assertEqual((rc, a["ok"], a["code"]), (1, False, "signin"))
+        self.assertEqual(MODE["posts"], [])
+
+    def test_account_dirs_finds_signed_in_directories(self):
+        import tempfile
+        saved = (cg.account_dirs, os.environ.get("XDG_CONFIG_HOME"), os.environ.pop("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", None))
+        cg.account_dirs = REAL_ACCOUNT_DIRS
+        try:
+            with tempfile.TemporaryDirectory() as home:
+                os.environ["XDG_CONFIG_HOME"] = home
+                root = os.path.join(home, "gws-accounts")
+                for name, signed in (("jan", True), ("empty", False), (".hidden", True)):
+                    os.makedirs(os.path.join(root, name))
+                    if signed:
+                        open(os.path.join(root, name, "credentials.enc"), "w").close()
+                self.assertEqual(cg.account_dirs(), [None, os.path.join(root, "jan")])
+                self.assertEqual([cg.account_key(d) for d in cg.account_dirs()], ["default", "jan"])
+                os.environ["GOOGLE_WORKSPACE_CLI_CONFIG_DIR"] = root
+                self.assertEqual(cg.account_dirs(), [None])
+        finally:
+            cg.account_dirs = saved[0]
+            if saved[1] is None: os.environ.pop("XDG_CONFIG_HOME", None)
+            else: os.environ["XDG_CONFIG_HOME"] = saved[1]
+            if saved[2] is None: os.environ.pop("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", None)
+            else: os.environ["GOOGLE_WORKSPACE_CLI_CONFIG_DIR"] = saved[2]
+
     def test_bad_arguments(self):
         for args in (["range"], ["range", "x", "y"], ["range", "2026-12-01", "2026-11-01"], ["range", "2026-01-01", "2027-01-01"]):
             rc, a, _ = self.run_it(*args)
             self.assertEqual((rc, a["ok"]), (1, False))
 
     def test_missing_gws(self):
-        saved, cg.credentials = cg.credentials, self.real_missing
+        saved, cg.credentials = cg.credentials, lambda d=None: self.real_missing()
         try:
             rc, a, _ = self.run_it("range", "2026-11-01", "2026-12-01")
             self.assertEqual(a["google"]["code"], "missing")

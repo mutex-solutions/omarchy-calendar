@@ -2,21 +2,32 @@
 """Calendar helper for the Calendar plugin. State.qml runs it, and so can an agent
 or a script. Local events work with no account at all; Google is optional.
 
-  calendar range FROM TO     local events and Google's, FROM <= day < TO
+  calendar range FROM TO     local events and every Google account's, FROM <= day < TO
   calendar create < JSON     add one event
   calendar update < JSON     change a local event, by "id"
   calendar delete < JSON     remove a local event, by "id"
 
 create reads {"title", "date": "YYYY-MM-DD", "start": "HH:MM", "end": "HH:MM",
-"location", "calendarId", "remind": minutes} from stdin; only title and date are
-required. No start makes it all-day, no end makes it an hour. No calendarId keeps
-it local; "primary" or a calendar's id sends it to Google. A timed local event
-reminds 10 minutes before unless "remind" says otherwise. What was typed arrives
-on stdin, never as an argument. Guests are not supported, so nobody is ever emailed.
+"location", "calendarId", "account", "remind": minutes} from stdin; only title and
+date are required. No start makes it all-day, no end makes it an hour. With neither
+calendarId nor account it stays local; "primary" or a calendar's id sends it to
+Google, to the named account or else the first. A timed local event reminds 10
+minutes before unless "remind" says otherwise.
+
+Accounts: the first is gws's own sign-in (~/.config/gws). Each further account is
+a gws sign-in kept in a directory of its own, ~/.config/gws-accounts/<name>/,
+made with
+
+  GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/.config/gws-accounts/<name> gws auth login -s calendar
+
+An account's key is "default" for the first and <name> for the others. Setting
+GOOGLE_WORKSPACE_CLI_CONFIG_DIR for this helper reads that one sign-in only.
+What was typed arrives on stdin, never as an argument. Guests are not supported,
+so nobody is ever emailed.
 
 Prints one JSON object on stdout, always. A Google failure does not fail a range:
 
-  {"ok": true, "account": ..., "calendars": [...], "events": [...],
+  {"ok": true, "account": ..., "accounts": [...], "calendars": [...], "events": [...],
    "google": {"ok": false, "code": "missing|signin|offline|error", "error": ...}}
   {"ok": true, "id": ..., "url": ...}
   {"ok": false, "code": "error", "error": ...}
@@ -81,16 +92,49 @@ def gws_config_dir():
     return os.path.join(base, "gws")
 
 
-def credentials():
-    """gws's saved sign-in: client id and secret, and the refresh token."""
+def accounts_root():
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "gws-accounts")
+
+
+def account_dirs():
+    """gws config directories, one per account. The first is gws's own."""
+    if os.environ.get("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", ""):
+        return [None]
+    dirs = [None]
+    root = accounts_root()
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        names = []
+    for name in names:
+        path = os.path.join(root, name)
+        if name.startswith(".") or not os.path.isdir(path):
+            continue
+        if any(os.path.exists(os.path.join(path, f)) for f in ("credentials.enc", "credentials.json")):
+            dirs.append(path)
+    return dirs
+
+
+def account_key(config_dir):
+    return "default" if config_dir is None else os.path.basename(config_dir)
+
+
+def credentials(config_dir=None):
+    """gws's saved sign-in: client id and secret, and the refresh token. None is
+    gws's own directory; anything else is one of the extra accounts."""
     found = None
-    # gws's own documented override, honoured the same way gws does.
-    named = os.environ.get("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "")
+    # gws's own documented override, honoured the same way gws does. It names
+    # one sign-in, so it stands for the first account only.
+    named = os.environ.get("GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", "") if config_dir is None else ""
     if named:
         found = read_json_file(named)
     if found is None:
+        env = None
+        if config_dir is not None:
+            env = dict(os.environ, GOOGLE_WORKSPACE_CLI_CONFIG_DIR=config_dir)
         try:
-            result = subprocess.run(["gws", "auth", "export", "--unmasked"], stdin=subprocess.DEVNULL,
+            result = subprocess.run(["gws", "auth", "export", "--unmasked"], stdin=subprocess.DEVNULL, env=env,
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15, check=False)
         except FileNotFoundError:
             raise Failure("gws is not installed.", "missing") from None
@@ -103,15 +147,15 @@ def credentials():
                 found = None
     if found is None:
         # gws keeps an unencrypted sign-in here when it has no keyring.
-        found = read_json_file(os.path.join(gws_config_dir(), "credentials.json"))
+        found = read_json_file(os.path.join(config_dir or gws_config_dir(), "credentials.json"))
     if not isinstance(found, dict) or not all(isinstance(found.get(k), str) and found.get(k)
                                               for k in ("client_id", "client_secret", "refresh_token")):
         raise Failure("gws is not signed in to Google.", "signin")
     return found
 
 
-def access_token():
-    creds = credentials()
+def access_token(config_dir=None):
+    creds = credentials(config_dir)
     form = urllib.parse.urlencode({
         "client_id": creds["client_id"], "client_secret": creds["client_secret"],
         "refresh_token": creds["refresh_token"], "grant_type": "refresh_token",
@@ -140,8 +184,9 @@ def access_token():
 # ---------------------------------------------------------------------------
 
 class Google:
-    def __init__(self):
-        self.token = access_token()
+    def __init__(self, config_dir=None):
+        self.key = account_key(config_dir)
+        self.token = access_token(config_dir)
 
     def call(self, path, params=None, body=None):
         url = API + path
@@ -307,8 +352,8 @@ def project_event(event, calendar):
     }
 
 
-def read_google(google, first, after):
-    lower, upper = local_midnight(first), local_midnight(after)
+def read_account(google, lower, upper):
+    """(email, calendars, events) for one signed-in account."""
     calendars = listed_calendars(google)
 
     def read(calendar):
@@ -318,36 +363,73 @@ def read_google(google, first, after):
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         answers = list(pool.map(read, calendars))
+    email = next((c["id"] for c in calendars if c.get("primary")), "")
     events = [e for calendar, raws in answers for e in (project_event(raw, calendar) for raw in raws) if e]
+    return email, calendars, events
+
+
+def read_google(first, after, dirs=None):
+    """Every account, read side by side. One account failing does not hide the
+    others: it is reported in `accounts`, and the status is a failure only when
+    every account failed. Never raises, so local events always come back."""
+    lower, upper = local_midnight(first), local_midnight(after)
+    dirs = account_dirs() if dirs is None else dirs
+
+    def one(config_dir):
+        try:
+            return config_dir, read_account(Google(config_dir), lower, upper), None
+        except Failure as error:
+            return config_dir, None, error
+        except (KeyError, TypeError, ValueError, AttributeError):
+            # Never a traceback: it could carry an event's text.
+            return config_dir, None, Failure("Google's answer could not be read.")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(one, dirs))
+
+    accounts, calendars, events = [], [], []
+    seen_calendars, seen_events = set(), set()
+    for config_dir, read, error in results:
+        key = account_key(config_dir)
+        if error:
+            accounts.append({"key": key, "email": "", "ok": False, "code": error.code, "error": str(error)})
+            continue
+        email, listed, found = read
+        accounts.append({"key": key, "email": email, "ok": True})
+        # A calendar shared into two accounts is shown once, from the first.
+        for c in listed:
+            if c["id"] in seen_calendars:
+                continue
+            seen_calendars.add(c["id"])
+            calendars.append({"id": c["id"], "name": calendar_name(c), "color": str(c.get("backgroundColor") or ""),
+                              "writable": c.get("accessRole") in ("writer", "owner"), "account": key})
+        for e in found:
+            if e["id"] in seen_events:
+                continue
+            seen_events.add(e["id"])
+            e["account"] = key
+            events.append(e)
+    failed = [error for _, _, error in results if error]
+    if results and len(failed) == len(results):
+        status = {"ok": False, "code": failed[0].code, "error": str(failed[0])}
+    else:
+        status = {"ok": True}
     return {
-        "account": next((c["id"] for c in calendars if c.get("primary")), ""),
-        "calendars": [{"id": c["id"], "name": calendar_name(c), "color": str(c.get("backgroundColor") or ""),
-                       "writable": c.get("accessRole") in ("writer", "owner")}
-                      for c in calendars],
-        "events": events,
+        "account": next((a["email"] for a in accounts if a["ok"]), ""),
+        "accounts": accounts, "calendars": calendars, "events": events, "status": status,
     }
 
 
 def read_range(first, after):
-    """Local events always; Google's when it answers. Google being absent or
-    down is a fact to report, not a reason to lose the local ones."""
-    events = read_local(first, after)
-    try:
-        google = read_google(Google(), first, after)
-        status = {"ok": True}
-    except Failure as error:
-        google = {"account": "", "calendars": [], "events": []}
-        status = {"ok": False, "code": error.code, "error": str(error)}
-    except (KeyError, TypeError, ValueError, AttributeError):
-        # Never a traceback: it could carry an event's text.
-        google = {"account": "", "calendars": [], "events": []}
-        status = {"ok": False, "code": "error", "error": "Google's answer could not be read."}
-    events += google["events"]
+    """Local events always, and every Google account that answers."""
+    google = read_google(first, after)
+    events = read_local(first, after) + google["events"]
     events.sort(key=lambda e: (e["start"], e["end"], e["title"]))
     return {
-        "ok": True, "account": google["account"], "google": status, "events": events,
+        "ok": True, "account": google["account"], "accounts": google["accounts"], "google": google["status"],
+        "events": events,
         "calendars": google["calendars"] + [{"id": LOCAL_ID, "name": LOCAL_CALENDAR["summary"],
-                                              "color": "", "writable": True}],
+                                              "color": "", "writable": True, "account": LOCAL_ID}],
     }
 
 
@@ -413,6 +495,7 @@ def read_local(first, after):
         except (KeyError, TypeError, ValueError):
             continue
         if event and begins < upper and (ends > lower or (ends == begins and begins >= lower)):
+            event["account"] = LOCAL_ID
             out.append(event)
     return out
 
@@ -510,12 +593,25 @@ def event_body(request):
     return body
 
 
+def account_for(request):
+    """The gws directory a create goes to: the named account, else the first."""
+    key = str(request.get("account") or "")[:128]
+    dirs = account_dirs()
+    if not key:
+        return dirs[0]
+    for config_dir in dirs:
+        if account_key(config_dir) == key:
+            return config_dir
+    raise Failure("That account is not signed in.", "signin")
+
+
 def create(request):
     body = event_body(request)
-    calendar_id = str(request.get("calendarId") or LOCAL_ID)[:512]
-    if calendar_id == LOCAL_ID:
+    calendar_id = str(request.get("calendarId") or "")[:512]
+    if calendar_id == LOCAL_ID or (not calendar_id and not request.get("account")):
         return local_create(request, body)
-    google = Google()
+    calendar_id = calendar_id or "primary"
+    google = Google(account_for(request))
     quoted = urllib.parse.quote(calendar_id, safe="")
     if google.call("/users/me/calendarList/" + quoted).get("accessRole") not in ("writer", "owner"):
         raise Failure("You can only read that calendar.")

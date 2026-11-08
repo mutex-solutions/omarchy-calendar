@@ -95,4 +95,20 @@ t("a failed Google read keeps Google's events and refreshes local", () => {
   const cals = M.mergeCalendars([{ id: "me" }, { id: "local" }], { calendars: [{ id: "local" }], google: { ok: false } })
   assert.deepEqual(cals.map(c => c.id), ["me", "local"])
 })
+t("accounts keep their colour by position, and filter cleanly", () => {
+  const accounts = [{ key: "default", email: "me@x", ok: true }, { key: "jan", email: "", ok: false, error: "Sign in again." }]
+  assert.equal(M.accountColor(accounts, "default"), M.ACCOUNT_COLORS[0])
+  assert.equal(M.accountColor(accounts, "jan"), M.ACCOUNT_COLORS[1])
+  assert.equal(M.accountColor(accounts, "gone"), "")
+  assert.equal(M.accountLabel(accounts, "default"), "me@x")
+  assert.equal(M.accountLabel(accounts, "jan"), "jan")
+  const list = [ev({ id: "a", account: "default" }), ev({ id: "b", account: "jan" })]
+  assert.deepEqual(M.forAccount(list, "jan").map(e => e.id), ["b"])
+  assert.equal(M.forAccount(list, "").length, 2)
+  assert.deepEqual(M.forAccount(list.concat([ev({ id: "l", account: "local" })]), "jan").map(e => e.id), ["b", "l"])
+  assert.equal(M.effectiveAccount(accounts, "jan"), "jan")
+  assert.equal(M.effectiveAccount(accounts, "gone"), "")
+  assert.equal(M.accountTrouble(accounts), "jan: Sign in again.")
+  assert.equal(M.accountTrouble([accounts[0]]), "")
+})
 console.log("model ok: " + n + " tests")

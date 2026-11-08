@@ -21,6 +21,8 @@ Item {
   property string status: "loading"
   property string message: ""
   property string account: ""
+  // [{ key, email, ok, code, error }], one per signed-in gws directory.
+  property var accounts: []
   property var calendars: []
   property var events: []
   // When Google last answered. Zero until then; local events do not need it.
@@ -30,7 +32,46 @@ Item {
   readonly property bool hasData: lastSync > 0
   readonly property bool needsSignIn: !hasData && (status === "missing" || status === "signin")
 
-  readonly property var upcomingList: M.upcoming(events, now)
+  // ---- accounts --------------------------------------------------------
+  // The filter is a view: it narrows the tile, the month and the form, never
+  // the reminders or Deck's notice, which keep watching every account.
+
+  property string accountFilter: ""
+  readonly property string shownAccount: M.effectiveAccount(accounts, accountFilter)
+  readonly property bool multiAccount: accounts.length > 1
+  readonly property string accountTrouble: M.accountTrouble(accounts)
+  readonly property var shownEvents: M.forAccount(events, shownAccount)
+
+  function accountColor(key) { return M.accountColor(accounts, key) }
+  function accountLabel(key) { return M.accountLabel(accounts, key) }
+
+  // Coloured by account when every account is on screen, so they can be told
+  // apart; by Google's own calendar colour when one account is chosen.
+  function eventColor(e) {
+    if (!e) return ""
+    if (multiAccount && shownAccount === "") return accountColor(e.account) || e.color || ""
+    return e.color || ""
+  }
+
+  function chooseAccount(key) {
+    accountFilter = key || ""
+    viewFile.setText(JSON.stringify({ account: accountFilter }))
+  }
+
+  FileView {
+    id: viewFile
+    path: s.stateDir + "/calendar-view.json"
+    printErrors: false
+    onLoaded: {
+      try {
+        var saved = JSON.parse(text()) || {}
+        s.accountFilter = String(saved.account || "")
+      } catch (e) {
+      }
+    }
+  }
+
+  readonly property var upcomingList: M.upcoming(shownEvents, now)
   readonly property var next: {
     for (var i = 0; i < upcomingList.length; i++)
       if (!upcomingList[i].allDay) return upcomingList[i]
@@ -64,7 +105,7 @@ Item {
   // month key -> { events, at }
   property var months: ({})
   readonly property string viewKey: viewYear + "-" + viewMonth
-  readonly property var viewEvents: months[viewKey] ? months[viewKey].events : events
+  readonly property var viewEvents: M.forAccount(months[viewKey] ? months[viewKey].events : events, shownAccount)
   readonly property var viewIndex: M.indexByDay(viewEvents)
 
   function shiftMonth(by) {
@@ -162,6 +203,8 @@ Item {
         if (!answer.ok) return
         s.events = M.mergeEvents(s.events, answer)
         s.calendars = M.mergeCalendars(s.calendars, answer)
+        // Every account's state, failed ones included, so their chips can say why.
+        if ((answer.accounts || []).length > 0) s.accounts = answer.accounts
         if (answer.google && answer.google.ok) {
           s.account = String(answer.account || "")
           s.lastSync = Date.now()
@@ -203,7 +246,8 @@ Item {
   property bool creating: false
   property string createError: ""
   signal created(string day)
-  readonly property var writableCalendars: calendars.filter(function(c) { return c.writable === true })
+  readonly property var writableCalendars: M.forAccount(calendars, shownAccount)
+    .filter(function(c) { return c.writable === true })
 
   // The request goes over stdin, so event text is never in a process list.
   function runChange(action, request) {

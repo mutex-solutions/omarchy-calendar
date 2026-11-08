@@ -21,7 +21,10 @@ Item {
   readonly property real barH: Style.space(30)
   readonly property real labelsH: Style.space(20)
   readonly property real cellH: wide ? Style.space(84) : Style.space(40)
-  readonly property real monthH: barH + labelsH + 6 * cellH
+  // With more than one account, a row of account chips sits under the month bar.
+  readonly property bool multi: !!state && state.multiAccount
+  readonly property real accountsH: multi ? accountFlow.implicitHeight + Style.space(6) : 0
+  readonly property real monthH: barH + accountsH + labelsH + 6 * cellH
   readonly property double now: state ? state.now : Date.now()
   readonly property var dayEvents: state && state.viewIndex[state.selectedDay] ? state.viewIndex[state.selectedDay] : []
   readonly property var soon: state ? state.upcomingList.slice(0, 6) : []
@@ -58,6 +61,7 @@ Item {
     formError = ""
     state.createError = ""
     calendarId = state.writableCalendars.length > 0 ? state.writableCalendars[0].id : ""
+    calendarAccount = state.writableCalendars.length > 0 ? String(state.writableCalendars[0].account || "") : ""
     view = "add"
     titleField.takeFocus()
   }
@@ -87,6 +91,7 @@ Item {
       request.id = editId
       state.updateEvent(request)
     } else {
+      if (calendarAccount !== "") request.account = calendarAccount
       state.createEvent(request)
     }
   }
@@ -94,6 +99,7 @@ Item {
   property bool allDay: false
   property string formError: ""
   property string calendarId: ""
+  property string calendarAccount: ""
   // The local event being edited, or empty for a new one.
   property string editId: ""
 
@@ -192,6 +198,56 @@ Item {
     }
   }
 
+  // An account in the filter row: its colour, its address, chosen or not.
+  component AccountChip: Rectangle {
+    id: ac
+    property string key: ""
+    property string text: ""
+    property color dot: Color.accent
+    property bool chosen: false
+    property bool broken: false
+    signal clicked()
+    width: acRow.implicitWidth + Style.space(16)
+    height: Style.space(24)
+    radius: Style.cornerRadius
+    color: acMouse.containsMouse ? Util.alpha(Color.foreground, 0.14)
+      : (chosen ? Util.alpha(dot, 0.22) : Util.alpha(Color.foreground, 0.06))
+    border.width: 1
+    border.color: chosen ? Util.alpha(dot, 0.8) : Util.alpha(Color.foreground, 0.1)
+
+    // Row places only; the row itself is centred, its children are not anchored.
+    Row {
+      id: acRow
+      anchors.centerIn: parent
+      spacing: Style.space(6)
+
+      Rectangle {
+        y: (acText.height - height) / 2
+        width: Style.space(8)
+        height: width
+        radius: width / 2
+        color: ac.dot
+        opacity: ac.broken ? 0.35 : 1
+      }
+
+      Text {
+        id: acText
+        text: ac.text
+        color: ac.broken ? Color.urgent : Color.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+    }
+
+    MouseArea {
+      id: acMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: ac.clicked()
+    }
+  }
+
   // One event in a list. Pressing it opens its details in place.
   component EventRow: Item {
     id: row
@@ -234,7 +290,7 @@ Item {
         width: Style.space(3)
         height: Style.space(16)
         radius: width
-        color: row.event && row.event.color ? row.event.color : Color.accent
+        color: (row.event && page.state ? page.state.eventColor(row.event) : "") || Color.accent
         opacity: row.event && row.event.declined ? 0.35 : 1
       }
 
@@ -301,7 +357,8 @@ Item {
 
       Text {
         width: parent.width
-        text: row.event ? row.event.calendar : ""
+        text: !row.event ? ""
+          : row.event.calendar + (page.multi ? " · " + page.state.accountLabel(row.event.account) : "")
         color: Util.alpha(Color.foreground, 0.45)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -383,8 +440,49 @@ Item {
       wrapMode: Text.Wrap
     }
 
+    // Every Google account, each with its colour and whether it answered.
     Repeater {
-      model: accountView.connected && page.state ? page.state.calendars : []
+      model: page.state ? page.state.accounts : []
+
+      Item {
+        required property var modelData
+        width: accountView.width
+        height: Style.space(24)
+
+        Rectangle {
+          id: accountDot
+          anchors.left: parent.left
+          anchors.verticalCenter: parent.verticalCenter
+          width: Style.space(8)
+          height: width
+          radius: width / 2
+          color: page.state.accountColor(modelData.key) || Color.accent
+          opacity: modelData.ok ? 1 : 0.35
+        }
+
+        Text {
+          anchors.left: accountDot.right
+          anchors.leftMargin: Style.space(8)
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          text: (modelData.email || modelData.key) + (modelData.ok ? ""
+            : modelData.code === "signin" ? " · sign in again" : " · unavailable")
+          color: modelData.ok ? Color.foreground : Color.urgent
+          font.family: Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          elide: Text.ElideRight
+        }
+      }
+    }
+
+    Caps {
+      visible: accountView.connected
+      text: "CALENDARS"
+    }
+
+    Repeater {
+      model: accountView.connected && page.state ? page.state.calendars.filter(function(c) { return c.id !== "local" }) : []
 
       Item {
         required property var modelData
@@ -406,13 +504,18 @@ Item {
           anchors.leftMargin: Style.space(8)
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
-          text: modelData.name
+          text: modelData.name + (page.multi ? " · " + page.state.accountLabel(modelData.account) : "")
           color: Color.foreground
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
           elide: Text.ElideRight
         }
       }
+    }
+
+    Caps {
+      visible: accountView.connected
+      text: "ADD AN ACCOUNT"
     }
 
     Text {
@@ -426,7 +529,8 @@ Item {
     }
 
     Repeater {
-      model: accountView.connected ? []
+      model: accountView.connected
+        ? ["GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/.config/gws-accounts/work gws auth login -s calendar"]
         : accountView.status === "missing"
           ? ["sudo pacman -S googleworkspace-cli", "gws auth login -s calendar"]
           : ["gws auth login -s calendar"]
@@ -547,9 +651,13 @@ Item {
 
         Chip {
           required property var modelData
-          text: modelData.name
+          text: modelData.name + (page.multi && page.state.shownAccount === ""
+            ? " · " + page.state.accountLabel(modelData.account) : "")
           strong: page.calendarId === modelData.id
-          onClicked: page.calendarId = modelData.id
+          onClicked: {
+            page.calendarId = modelData.id
+            page.calendarAccount = String(modelData.account || "")
+          }
         }
       }
     }
@@ -620,7 +728,8 @@ Item {
         anchors.rightMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
         // Says so when what is on screen is not current. Quiet when it is.
-        text: !page.state || page.state.status === "ok" || page.state.status === "loading" ? ""
+        text: !page.state || page.state.status === "loading" ? ""
+          : page.state.status === "ok" ? page.state.accountTrouble
           : page.state.needsSignIn ? "Not connected"
           : (page.state.status === "offline" ? "Offline" : page.state.message)
             + (page.state.hasData ? ", from " + M.clock(page.state.lastSync) : "")
@@ -668,9 +777,42 @@ Item {
       }
     }
 
+    Flow {
+      id: accountFlow
+      visible: page.multi
+      y: page.barH + Style.space(2)
+      width: parent.width
+      spacing: Style.space(4)
+
+      AccountChip {
+        text: "All"
+        // Neutral: the first account's colour is close to most accents.
+        dot: Util.alpha(Color.foreground, 0.6)
+        chosen: !!page.state && page.state.shownAccount === ""
+        onClicked: page.state.chooseAccount("")
+      }
+
+      Repeater {
+        model: page.state ? page.state.accounts : []
+
+        AccountChip {
+          required property var modelData
+          key: modelData.key
+          // Only a sign-in problem asks to sign in again; Google's own hiccups
+          // (5xx, offline) say "unavailable" and clear at the next refresh.
+          text: (modelData.email || modelData.key) + (modelData.ok ? ""
+            : modelData.code === "signin" ? " · sign in again" : " · unavailable")
+          dot: page.state.accountColor(modelData.key) || Color.accent
+          broken: !modelData.ok
+          chosen: page.state.shownAccount === modelData.key
+          onClicked: page.state.chooseAccount(modelData.key)
+        }
+      }
+    }
+
     Item {
       id: labels
-      y: page.barH
+      y: page.barH + page.accountsH
       width: parent.width
       height: page.labelsH
 
@@ -695,7 +837,7 @@ Item {
 
     Item {
       id: cells
-      y: page.barH + page.labelsH
+      y: page.barH + page.accountsH + page.labelsH
       width: parent.width
       height: 6 * page.cellH
       readonly property real cellW: width / 7
@@ -763,7 +905,7 @@ Item {
               width: cell.width - Style.space(6)
               height: Style.space(16)
               radius: Style.space(3)
-              color: Util.alpha(modelData.color || Color.accent, modelData.declined ? 0.12 : 0.32)
+              color: Util.alpha(page.state.eventColor(modelData) || Color.accent, modelData.declined ? 0.12 : 0.32)
               opacity: cell.modelData.inMonth ? 1 : 0.5
 
               Text {
@@ -801,7 +943,7 @@ Item {
             width: Style.space(5)
             height: width
             radius: width / 2
-            color: cell.dayList.length > 0 && cell.dayList[0].color ? cell.dayList[0].color : Color.accent
+            color: (cell.dayList.length > 0 ? page.state.eventColor(cell.dayList[0]) : "") || Color.accent
           }
         }
       }
