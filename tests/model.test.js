@@ -111,4 +111,13 @@ t("accounts keep their colour by position, and filter cleanly", () => {
   assert.equal(M.accountTrouble(accounts), "jan: Sign in again.")
   assert.equal(M.accountTrouble([accounts[0]]), "")
 })
+t("a later all-day event shows its day in lists", () => {
+  const later = ev({ allDay: true, start: at(2026, 11, 24), end: at(2026, 11, 25) })
+  assert.equal(M.timeColumn(later, now), "Tue 24 Nov")
+  assert.equal(M.shortColumn(later, now), "Tue 24")
+  const today = ev({ allDay: true, start: at(2026, 11, 6), end: at(2026, 11, 7) })
+  assert.equal(M.timeColumn(today, now), "All day")
+  assert.equal(M.shortColumn(today, now), "All day")
+  assert.equal(M.shortColumn(ev({ allDay: true, start: at(2026, 11, 7), end: at(2026, 11, 8) }), now), "Tmrw")
+})
 console.log("model ok: " + n + " tests")

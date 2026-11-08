@@ -163,14 +163,15 @@ function whenWords(e, now) {
 
 // The time column in a list.
 function timeColumn(e, now) {
-  if (e.allDay) return "All day"
+  // A later all-day event needs its day, not just "All day".
+  if (e.allDay) return e.start <= now ? "All day" : dayWord(e.start, now)
   return daysBetween(now, e.start) === 0 ? clock(e.start) : dayWord(e.start, now)
 }
 
 // The same column, narrower, for a tile.
 function shortColumn(e, now) {
-  if (e.allDay) return "All day"
   var apart = daysBetween(now, e.start)
+  if (e.allDay && apart <= 0) return "All day"
   if (apart === 0) return clock(e.start)
   if (apart === 1) return "Tmrw"
   return DAYS[new Date(e.start).getDay()] + (apart < 7 ? "" : " " + new Date(e.start).getDate())

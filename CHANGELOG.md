@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- A later all-day event in a list shows its day (`Tue 24 Nov`), not just "All day".
+
 ## 0.3.0
 
 Merges this laptop's work with 0.2.x from the other device.
