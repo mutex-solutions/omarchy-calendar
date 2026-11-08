@@ -442,7 +442,8 @@ Item {
 
     // Every Google account, each with its colour and whether it answered.
     Repeater {
-      model: page.state ? page.state.accounts : []
+      // Only once something answered: before that, the steps below say more.
+      model: accountView.connected ? page.state.accounts : []
 
       Item {
         required property var modelData
