@@ -53,9 +53,21 @@ Item {
     return e.color || ""
   }
 
+  // Compact: a small month with the day's events under it, at Deck's usual width.
+  property bool compact: false
+
   function chooseAccount(key) {
     accountFilter = key || ""
-    viewFile.setText(JSON.stringify({ account: accountFilter }))
+    saveView()
+  }
+
+  function setCompact(on) {
+    compact = on === true
+    saveView()
+  }
+
+  function saveView() {
+    viewFile.setText(JSON.stringify({ account: accountFilter, compact: compact }))
   }
 
   FileView {
@@ -66,6 +78,7 @@ Item {
       try {
         var saved = JSON.parse(text()) || {}
         s.accountFilter = String(saved.account || "")
+        s.compact = saved.compact === true
       } catch (e) {
       }
     }

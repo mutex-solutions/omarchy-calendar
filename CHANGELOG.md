@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+- **Compact view**, by choice: a small month on top and the day's events below, at
+  Deck's usual width. It only appeared before when the screen was too narrow.
+  Remembered with the account filter.
+
 ## 0.3.1
 
 - A later all-day event in a list shows its day (`Tue 24 Nov`), not just "All day".

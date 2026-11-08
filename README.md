@@ -9,7 +9,8 @@ clock stays as it is.
 - **Reminders:** system notifications from each event's own Google reminders, with
   the panel closed.
 - **Page:** tap the tile for a full month, the chosen day, what is coming up, and
-  New to add an event.
+  New to add an event. **Compact** puts a small month above the day's events at
+  Deck's usual width; `󰊓` goes back. The choice is remembered.
 - **Local events:** work with no account, and can be edited and deleted from the page.
   Google events are added here and changed in Google, through Open in Google.
 

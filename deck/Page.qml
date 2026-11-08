@@ -13,9 +13,10 @@ Item {
   property var host: null
 
   // Deck widens its card for a page that asks. Only the month needs the room.
-  readonly property real preferredWidth: view === "month" ? Style.space(860) : 0
+  readonly property real preferredWidth: view === "month" && !(state && state.compact) ? Style.space(860) : 0
 
-  readonly property bool wide: width >= Style.space(620)
+  // Compact is the narrow layout by choice; a narrow screen gets it either way.
+  readonly property bool wide: !(state && state.compact) && width >= Style.space(620)
   readonly property real gap: Style.space(12)
   readonly property real agendaWidth: wide ? Style.space(270) : width
   readonly property real barH: Style.space(30)
@@ -715,7 +716,9 @@ Item {
         anchors.right: statusText.left
         anchors.rightMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
-        text: page.state ? M.monthTitle(page.state.viewYear, page.state.viewMonth) : ""
+        text: !page.state ? ""
+          : page.wide ? M.monthTitle(page.state.viewYear, page.state.viewMonth)
+          : M.MONTHS[page.state.viewMonth].slice(0, 3) + " " + page.state.viewYear
         color: Color.foreground
         font.family: Style.font.family
         font.pixelSize: Style.font.title
@@ -735,7 +738,7 @@ Item {
           : (page.state.status === "offline" ? "Offline" : page.state.message)
             + (page.state.hasData ? ", from " + M.clock(page.state.lastSync) : "")
         color: page.state && page.state.needsSignIn ? Util.alpha(Color.foreground, 0.5) : Color.urgent
-        width: Math.min(implicitWidth, Style.space(200))
+        width: page.wide ? Math.min(implicitWidth, Style.space(200)) : 0
         elide: Text.ElideRight
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -746,7 +749,7 @@ Item {
         anchors.right: todayChip.left
         anchors.rightMargin: Style.space(4)
         anchors.verticalCenter: parent.verticalCenter
-        text: "New"
+        text: page.wide ? "New" : "+"
         strong: true
         onClicked: page.openAdd()
       }
@@ -765,16 +768,26 @@ Item {
         anchors.right: settingsChip.left
         anchors.rightMargin: Style.space(4)
         anchors.verticalCenter: parent.verticalCenter
-        text: "Refresh"
+        text: page.wide ? "Refresh" : "↻"
         onClicked: page.state.refresh()
       }
 
       Chip {
         id: settingsChip
+        anchors.right: sizeChip.left
+        anchors.rightMargin: Style.space(4)
+        anchors.verticalCenter: parent.verticalCenter
+        text: page.wide ? "Settings" : "󰒓"
+        onClicked: page.view = "account"
+      }
+
+      // Full month and agenda side by side, or the compact one above the other.
+      Chip {
+        id: sizeChip
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        text: "Settings"
-        onClicked: page.view = "account"
+        text: page.state && page.state.compact ? "󰊓" : "Compact"
+        onClicked: page.state.setCompact(!page.state.compact)
       }
     }
 
