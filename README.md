@@ -6,8 +6,9 @@ clock stays as it is.
 
 - **Tile:** a 4x1 tile lists the next two events, a 2x2 tile more. Half-size shows just the next.
 - **Deck's strip:** a notice from 15 minutes before a timed event until it ends.
-- **Reminders:** system notifications from each event's own Google reminders, with
-  the panel closed.
+- **Reminders:** a notification with a sound 10 minutes before every timed event, plus
+  any reminders the event has of its own, with the panel closed. Silent under Do Not
+  Disturb.
 - **Page:** tap the tile for a full month, the chosen day, what is coming up, and
   New to add an event. **Compact** puts a small month above the day's events at
   Deck's usual width; `󰊓` goes back. The choice is remembered.

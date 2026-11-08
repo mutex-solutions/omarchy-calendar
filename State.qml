@@ -349,10 +349,22 @@ Item {
     for (var j = 0; j < due.fire.length; j++) notify(due.fire[j])
   }
 
-  // No shell, and `--` so a title starting with a dash stays a title.
+  // No shell for the text, and `--` so a title starting with a dash stays a title.
   function notify(e) {
     Quickshell.execDetached(["notify-send", "-a", "Calendar", "--",
       String(e.title), M.reminderBody(e, Date.now())])
+    chime()
+  }
+
+  // A sound, like other calendar apps, except while Omarchy's Do Not Disturb is
+  // on. The notification server plays none of its own.
+  readonly property string chimeFile: "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga"
+  readonly property string quietFile: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state")
+    + "/omarchy/notifications/quiet.json"
+  function chime() {
+    Quickshell.execDetached(["sh", "-c",
+      'jq -e ".dnd == true" "$1" >/dev/null 2>&1 && exit 0; pw-play "$2" 2>/dev/null || paplay "$2" 2>/dev/null',
+      "_", quietFile, chimeFile])
   }
 
   // ---- clocks ------------------------------------------------------------

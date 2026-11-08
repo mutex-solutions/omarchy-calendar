@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.3
+
+- **Every timed event reminds 10 minutes before**, on top of its own reminders.
+  Google events often had none, so meetings passed without a word.
+- **Reminders play a sound**, except under Omarchy's Do Not Disturb.
+- The tile's list shows the time with the day (`Tmrw 09:00`), and its column no
+  longer cuts off "All day".
+
 ## 0.3.2
 
 - **Compact view**, by choice: a small month on top and the day's events below, at

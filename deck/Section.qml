@@ -143,7 +143,7 @@ Item {
               anchors.left: dot.right
               anchors.leftMargin: Style.space(6)
               anchors.verticalCenter: parent.verticalCenter
-              width: Style.space(38)
+              width: Style.space(68)
               text: M.shortColumn(modelData, body.now)
               color: Util.alpha(Color.foreground, 0.6)
               font.family: Style.font.family

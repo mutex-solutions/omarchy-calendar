@@ -62,11 +62,11 @@ t("not due yet does not fire or mark", () => {
 })
 t("slept through two reminders: one notification, both marked", () => {
   const r = M.dueReminders([ev({ start: now + 60000, end: now + 3600000, reminders: [now - 600000, now - 60000] })], now, {})
-  assert.equal(r.fire.length, 1); assert.equal(r.mark.length, 2)
+  assert.equal(r.fire.length, 1); assert.equal(r.mark.length, 3)  // both, plus the 10-minute one
 })
 t("woke long after it began: marked, silent", () => {
   const r = M.dueReminders([ev({ start: now - 3600000, end: now + 3600000, reminders: [now - 4000000] })], now, {})
-  assert.equal(r.fire.length, 0); assert.equal(r.mark.length, 1)
+  assert.equal(r.fire.length, 0); assert.equal(r.mark.length, 2)  // its own, plus the 10-minute one
 })
 t("declined never notifies", () => {
   const r = M.dueReminders([ev({ declined: true, start: now + 60000, end: now + 3600000, reminders: [now - 1000] })], now, {})
@@ -119,5 +119,19 @@ t("a later all-day event shows its day in lists", () => {
   assert.equal(M.timeColumn(today, now), "All day")
   assert.equal(M.shortColumn(today, now), "All day")
   assert.equal(M.shortColumn(ev({ allDay: true, start: at(2026, 11, 7), end: at(2026, 11, 8) }), now), "Tmrw")
+})
+t("every timed event reminds 10 minutes before, once", () => {
+  const e = ev({ start: now + 20 * 60000, end: now + 3600000, reminders: [] })
+  assert.deepEqual(M.reminderTimes(e), [now + 10 * 60000])
+  assert.deepEqual(M.reminderTimes(ev({ start: now, end: now + 1, reminders: [now - 600000] })), [now - 600000])
+  assert.deepEqual(M.reminderTimes(ev({ start: now, end: now + 1, reminders: [now - 3600000] })), [now - 3600000, now - 600000])
+  assert.deepEqual(M.reminderTimes(ev({ allDay: true, start: now, end: now + 1, reminders: [] })), [])
+  assert.equal(M.dueReminders([e], now + 10 * 60000, {}).fire.length, 1)
+  assert.equal(M.dueReminders([e], now + 9 * 60000, {}).fire.length, 0)
+})
+t("tile column carries the time", () => {
+  assert.equal(M.shortColumn(ev({ start: at(2026, 11, 7, 9), end: at(2026, 11, 7, 10) }), now), "Tmrw 09:00")
+  assert.equal(M.shortColumn(ev({ start: at(2026, 11, 6, 15), end: at(2026, 11, 6, 16) }), now), "15:00")
+  assert.equal(M.shortColumn(ev({ start: at(2026, 11, 10, 14), end: at(2026, 11, 10, 15) }), now), "Tue 14:00")
 })
 console.log("model ok: " + n + " tests")

@@ -9,6 +9,9 @@ var SOON_MINUTES = 15
 // A reminder still fires this long after its event began, so a laptop waking
 // into a meeting says so. After that it is history and is dropped silently.
 var LATE_GRACE = 5 * MINUTE
+// Every timed event reminds this long before it starts, on top of its own
+// reminders, the way calendar apps do. Google's default is often none.
+var DEFAULT_LEAD = 10 * MINUTE
 
 var MONTHS = ["January", "February", "March", "April", "May", "June", "July",
               "August", "September", "October", "November", "December"]
@@ -169,12 +172,14 @@ function timeColumn(e, now) {
 }
 
 // The same column, narrower, for a tile.
+// Day and time, so "Tmrw" alone never leaves you guessing when.
 function shortColumn(e, now) {
   var apart = daysBetween(now, e.start)
   if (e.allDay && apart <= 0) return "All day"
-  if (apart === 0) return clock(e.start)
-  if (apart === 1) return "Tmrw"
-  return DAYS[new Date(e.start).getDay()] + (apart < 7 ? "" : " " + new Date(e.start).getDate())
+  var d = new Date(e.start)
+  var day = apart === 1 ? "Tmrw" : DAYS[d.getDay()] + (apart < 7 ? "" : " " + d.getDate())
+  if (e.allDay) return day
+  return apart === 0 ? clock(e.start) : day + " " + clock(e.start)
 }
 
 // What the form sends, or the sentence saying why not. An empty end is an hour.
@@ -227,15 +232,22 @@ function reminderKey(e, at) { return e.id + "@" + at }
 
 // What to notify about, and what to remember. Several reminders of one event
 // due at once (the laptop slept through them) become one notification.
+// When an event reminds: its own times, plus DEFAULT_LEAD before a timed one.
+function reminderTimes(e) {
+  var times = (e.reminders || []).slice()
+  if (!e.allDay && times.indexOf(e.start - DEFAULT_LEAD) < 0) times.push(e.start - DEFAULT_LEAD)
+  return times.sort(function(a, b) { return a - b })
+}
+
 function dueReminders(events, now, fired) {
   var fire = []
   var mark = []
   for (var i = 0; i < events.length; i++) {
     var e = events[i]
-    if (!e.reminders) continue
+    var times = reminderTimes(e)
     var due = false
-    for (var j = 0; j < e.reminders.length; j++) {
-      var at = e.reminders[j]
+    for (var j = 0; j < times.length; j++) {
+      var at = times[j]
       var key = reminderKey(e, at)
       if (at > now || fired[key]) continue
       mark.push(key)
