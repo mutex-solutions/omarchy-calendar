@@ -21,7 +21,10 @@ Item {
   readonly property real barH: Style.space(30)
   readonly property real labelsH: Style.space(20)
   readonly property real cellH: wide ? Style.space(84) : Style.space(40)
-  readonly property real monthH: barH + labelsH + 6 * cellH
+  // With more than one account, a row of account chips sits under the month bar.
+  readonly property bool multi: !!state && state.multiAccount
+  readonly property real accountsH: multi ? accountFlow.implicitHeight + Style.space(6) : 0
+  readonly property real monthH: barH + accountsH + labelsH + 6 * cellH
   readonly property double now: state ? state.now : Date.now()
   readonly property var dayEvents: state && state.viewIndex[state.selectedDay] ? state.viewIndex[state.selectedDay] : []
   readonly property var soon: state ? state.upcomingList.slice(0, 6) : []
@@ -57,6 +60,7 @@ Item {
     formError = ""
     state.createError = ""
     calendarId = state.writableCalendars.length > 0 ? state.writableCalendars[0].id : ""
+    calendarAccount = state.writableCalendars.length > 0 ? String(state.writableCalendars[0].account || "") : ""
     view = "add"
     titleField.takeFocus()
   }
@@ -66,12 +70,15 @@ Item {
     var request = M.newEventRequest(titleField.text, dateField.text.trim(), allDay,
       startField.text.trim(), endField.text.trim(), locationField.text, calendarId)
     formError = request.error || ""
-    if (!request.error) state.createEvent(request)
+    if (request.error) return
+    if (calendarAccount !== "") request.account = calendarAccount
+    state.createEvent(request)
   }
 
   property bool allDay: false
   property string formError: ""
   property string calendarId: ""
+  property string calendarAccount: ""
 
   Connections {
     target: page.state
@@ -168,6 +175,56 @@ Item {
     }
   }
 
+  // An account in the filter row: its colour, its address, chosen or not.
+  component AccountChip: Rectangle {
+    id: ac
+    property string key: ""
+    property string text: ""
+    property color dot: Color.accent
+    property bool chosen: false
+    property bool broken: false
+    signal clicked()
+    width: acRow.implicitWidth + Style.space(16)
+    height: Style.space(24)
+    radius: Style.cornerRadius
+    color: acMouse.containsMouse ? Util.alpha(Color.foreground, 0.14)
+      : (chosen ? Util.alpha(dot, 0.22) : Util.alpha(Color.foreground, 0.06))
+    border.width: 1
+    border.color: chosen ? Util.alpha(dot, 0.8) : Util.alpha(Color.foreground, 0.1)
+
+    // Row places only; the row itself is centred, its children are not anchored.
+    Row {
+      id: acRow
+      anchors.centerIn: parent
+      spacing: Style.space(6)
+
+      Rectangle {
+        y: (acText.height - height) / 2
+        width: Style.space(8)
+        height: width
+        radius: width / 2
+        color: ac.dot
+        opacity: ac.broken ? 0.35 : 1
+      }
+
+      Text {
+        id: acText
+        text: ac.text
+        color: ac.broken ? Color.urgent : Color.foreground
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+    }
+
+    MouseArea {
+      id: acMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: ac.clicked()
+    }
+  }
+
   // One event in a list. Pressing it opens its details in place.
   component EventRow: Item {
     id: row
@@ -208,7 +265,7 @@ Item {
         width: Style.space(3)
         height: Style.space(16)
         radius: width
-        color: row.event && row.event.color ? row.event.color : Color.accent
+        color: (row.event && page.state ? page.state.eventColor(row.event) : "") || Color.accent
         opacity: row.event && row.event.declined ? 0.35 : 1
       }
 
@@ -275,7 +332,8 @@ Item {
 
       Text {
         width: parent.width
-        text: row.event ? row.event.calendar : ""
+        text: !row.event ? ""
+          : row.event.calendar + (page.multi ? " · " + page.state.accountLabel(row.event.account) : "")
         color: Util.alpha(Color.foreground, 0.45)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -454,9 +512,13 @@ Item {
 
         Chip {
           required property var modelData
-          text: modelData.name
+          text: modelData.name + (page.multi && page.state.shownAccount === ""
+            ? " · " + page.state.accountLabel(modelData.account) : "")
           strong: page.calendarId === modelData.id
-          onClicked: page.calendarId = modelData.id
+          onClicked: {
+            page.calendarId = modelData.id
+            page.calendarAccount = String(modelData.account || "")
+          }
         }
       }
     }
@@ -527,7 +589,8 @@ Item {
         anchors.rightMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
         // Says so when what is on screen is not current. Quiet when it is.
-        text: !page.state || page.state.status === "ok" || page.state.status === "loading" ? ""
+        text: !page.state || page.state.status === "loading" ? ""
+          : page.state.status === "ok" ? page.state.accountTrouble
           : (page.state.status === "offline" ? "Offline" : page.state.message)
             + (page.state.hasData ? ", from " + M.clock(page.state.lastSync) : "")
         color: Color.urgent
@@ -565,9 +628,39 @@ Item {
       }
     }
 
+    Flow {
+      id: accountFlow
+      visible: page.multi
+      y: page.barH + Style.space(2)
+      width: parent.width
+      spacing: Style.space(4)
+
+      AccountChip {
+        text: "All"
+        // Neutral: the first account's colour is close to most accents.
+        dot: Util.alpha(Color.foreground, 0.6)
+        chosen: !!page.state && page.state.shownAccount === ""
+        onClicked: page.state.chooseAccount("")
+      }
+
+      Repeater {
+        model: page.state ? page.state.accounts : []
+
+        AccountChip {
+          required property var modelData
+          key: modelData.key
+          text: (modelData.email || modelData.key) + (modelData.ok ? "" : " · sign in again")
+          dot: page.state.accountColor(modelData.key) || Color.accent
+          broken: !modelData.ok
+          chosen: page.state.shownAccount === modelData.key
+          onClicked: page.state.chooseAccount(modelData.key)
+        }
+      }
+    }
+
     Item {
       id: labels
-      y: page.barH
+      y: page.barH + page.accountsH
       width: parent.width
       height: page.labelsH
 
@@ -592,7 +685,7 @@ Item {
 
     Item {
       id: cells
-      y: page.barH + page.labelsH
+      y: page.barH + page.accountsH + page.labelsH
       width: parent.width
       height: 6 * page.cellH
       readonly property real cellW: width / 7
@@ -660,7 +753,7 @@ Item {
               width: cell.width - Style.space(6)
               height: Style.space(16)
               radius: Style.space(3)
-              color: Util.alpha(modelData.color || Color.accent, modelData.declined ? 0.12 : 0.32)
+              color: Util.alpha(page.state.eventColor(modelData) || Color.accent, modelData.declined ? 0.12 : 0.32)
               opacity: cell.modelData.inMonth ? 1 : 0.5
 
               Text {
@@ -698,7 +791,7 @@ Item {
             width: Style.space(5)
             height: width
             radius: width / 2
-            color: cell.dayList.length > 0 && cell.dayList[0].color ? cell.dayList[0].color : Color.accent
+            color: (cell.dayList.length > 0 ? page.state.eventColor(cell.dayList[0]) : "") || Color.accent
           }
         }
       }

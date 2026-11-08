@@ -122,7 +122,7 @@ Item {
               width: Style.space(6)
               height: width
               radius: width / 2
-              color: modelData.color || Color.accent
+              color: (body.st ? body.st.eventColor(modelData) : modelData.color) || Color.accent
             }
 
             Text {

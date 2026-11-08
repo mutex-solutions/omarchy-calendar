@@ -86,4 +86,19 @@ t("new event request", () => {
   assert.deepEqual(JSON.parse(JSON.stringify(r)), { title: "Dentist", date: "2026-11-20", location: "Clinic", calendarId: "c@x", start: "09:30" })
   assert.equal(M.newEventRequest("x", "2026-11-20", true, "", "").start, undefined)
 })
+t("accounts keep their colour by position, and filter cleanly", () => {
+  const accounts = [{ key: "default", email: "me@x", ok: true }, { key: "jan", email: "", ok: false, error: "Sign in again." }]
+  assert.equal(M.accountColor(accounts, "default"), M.ACCOUNT_COLORS[0])
+  assert.equal(M.accountColor(accounts, "jan"), M.ACCOUNT_COLORS[1])
+  assert.equal(M.accountColor(accounts, "gone"), "")
+  assert.equal(M.accountLabel(accounts, "default"), "me@x")
+  assert.equal(M.accountLabel(accounts, "jan"), "jan")
+  const list = [ev({ id: "a", account: "default" }), ev({ id: "b", account: "jan" })]
+  assert.deepEqual(M.forAccount(list, "jan").map(e => e.id), ["b"])
+  assert.equal(M.forAccount(list, "").length, 2)
+  assert.equal(M.effectiveAccount(accounts, "jan"), "jan")
+  assert.equal(M.effectiveAccount(accounts, "gone"), "")
+  assert.equal(M.accountTrouble(accounts), "jan: Sign in again.")
+  assert.equal(M.accountTrouble([accounts[0]]), "")
+})
 console.log("model ok: " + n + " tests")

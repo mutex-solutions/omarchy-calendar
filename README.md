@@ -33,6 +33,24 @@ Then one of:
 gws auth login -s calendar
 ```
 
+### More than one account
+
+The first account is gws's own sign-in. Add each further account as a gws sign-in
+in a directory of its own under `~/.config/gws-accounts/` (the directory name is
+the account's key):
+
+```bash
+GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/.config/gws-accounts/work gws auth login -s calendar
+```
+
+The page then shows a row of account chips: **All**, or one account. In All,
+events are coloured by account; with one chosen, by Google's calendar colours.
+The tile follows the choice; reminders and the notice cover every account. To
+remove an account, delete its directory.
+
+On Google's consent screen Calendar is a **checkbox**: left unticked, the sign-in
+still succeeds but can read nothing, and the page says to sign in again.
+
 **Publish the consent screen to production.** Google expires refresh tokens after 7
 days while an app is in Testing, and Calendar would ask you to sign in again every
 week. For read-only, sign in with `--readonly` as well; New then reports that the
@@ -68,7 +86,7 @@ $H range 2026-11-06 2026-11-13
 echo '{"title":"Dentist","date":"2026-11-20","start":"09:30","end":"10:15"}' | $H create
 ```
 
-Only `title` and `date` are required. No `start` makes it all-day, no `end` makes it an
+Only `title` and `date` are required. `account` (a key: `default` or a directory name under `~/.config/gws-accounts/`) picks the account; without it, the first. No `start` makes it all-day, no `end` makes it an
 hour. `location` and `calendarId` are optional. The panel picks an event up at its next
 refresh, within 5 minutes.
 

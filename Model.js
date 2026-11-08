@@ -14,6 +14,45 @@ var MONTHS = ["January", "February", "March", "April", "May", "June", "July",
               "August", "September", "October", "November", "December"]
 var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
+// One colour per account, in the order the helper lists them. Fixed rather than
+// taken from the theme, so an account keeps its colour across theme changes;
+// mid-tone, so it reads on a light or a dark background.
+var ACCOUNT_COLORS = ["#bd93f9", "#ff79c6", "#50fa7b", "#ffb86c", "#8be9fd", "#f1fa8c"]
+
+function accountColor(accounts, key) {
+  for (var i = 0; i < (accounts || []).length; i++)
+    if (accounts[i].key === key) return ACCOUNT_COLORS[i % ACCOUNT_COLORS.length]
+  return ""
+}
+
+function accountLabel(accounts, key) {
+  for (var i = 0; i < (accounts || []).length; i++)
+    if (accounts[i].key === key) return accounts[i].email || accounts[i].key
+  return String(key || "")
+}
+
+// "" is every account. A key that no longer exists (an account signed out)
+// also means every account, so the page never shows an empty filter.
+function effectiveAccount(accounts, key) {
+  if (!key) return ""
+  for (var i = 0; i < (accounts || []).length; i++)
+    if (accounts[i].key === key) return key
+  return ""
+}
+
+// Events or calendars of one account; "" keeps them all.
+function forAccount(list, key) {
+  if (!key) return list
+  return list.filter(function(x) { return x.account === key })
+}
+
+// What the page says about accounts that could not be read, or "".
+function accountTrouble(accounts) {
+  var bad = (accounts || []).filter(function(a) { return !a.ok })
+  if (bad.length === 0) return ""
+  return bad.map(function(a) { return a.key + ": " + (a.error || "could not be read") }).join("; ")
+}
+
 function pad(n) { return (n < 10 ? "0" : "") + n }
 
 function dayKey(date) {
