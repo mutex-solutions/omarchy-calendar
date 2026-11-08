@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+
+- A failed account's chip says "sign in again" only when signing in would
+  fix it (`code: signin`); a hiccup at Google (a 5xx on the token endpoint,
+  offline) says "unavailable" and clears at the next refresh. Seen on the
+  first day: one 5xx read as "sign in again" on a perfectly good account.
+- The page asks for its full width through Deck's `preferredWidth` (Deck
+  0.10.2), so month and agenda sit side by side.
+
 ## 0.2.0
 
 - More than one Google account. Each extra account is a gws sign-in in its own

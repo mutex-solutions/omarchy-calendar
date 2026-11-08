@@ -649,7 +649,10 @@ Item {
         AccountChip {
           required property var modelData
           key: modelData.key
-          text: (modelData.email || modelData.key) + (modelData.ok ? "" : " · sign in again")
+          // Only a sign-in problem asks to sign in again; Google's own hiccups
+          // (5xx, offline) say "unavailable" and clear at the next refresh.
+          text: (modelData.email || modelData.key) + (modelData.ok ? ""
+            : modelData.code === "signin" ? " · sign in again" : " · unavailable")
           dot: page.state.accountColor(modelData.key) || Color.accent
           broken: !modelData.ok
           chosen: page.state.shownAccount === modelData.key
