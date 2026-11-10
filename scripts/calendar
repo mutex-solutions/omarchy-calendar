@@ -531,12 +531,17 @@ def local_id(request):
 def local_update(request):
     target = local_id(request)
     body = event_body(request)
-    body["reminders"] = local_reminders(request, body)
     body["id"] = target
     with LocalLock():
         events = load_local()
-        if not any(e.get("id") == target for e in events):
+        previous = next((e for e in events if e.get("id") == target), None)
+        if previous is None:
             raise Failure("That event is gone.")
+        # An omitted lead means "unchanged", not "reset to ten minutes". The
+        # edit form does not expose reminders, so this also preserves a custom
+        # lead written by another local client.
+        body["reminders"] = (local_reminders(request, body) if "remind" in request
+                             else previous.get("reminders") or local_reminders(request, body))
         save_local([body if e.get("id") == target else e for e in events])
     return {"ok": True, "id": LOCAL_ID + "/" + target, "url": ""}
 

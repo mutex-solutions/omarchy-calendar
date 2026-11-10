@@ -11,9 +11,14 @@ clock stays as it is.
   Disturb.
 - **Page:** tap the tile for a full month, the chosen day, what is coming up, and
   New to add an event. **Compact** puts a small month above the day's events at
-  Deck's usual width; `󰊓` goes back. The choice is remembered.
+  Deck's usual width; `󰊓` goes back. The choice is remembered. Upcoming events are
+  grouped by day, and the year-progress rail follows today.
+- **Week display:** Settings offers Automatic (Omarchy's live locale), Sunday or
+  Monday week starts, and an ISO week-number gutter. These choices share the same
+  saved view file as Compact and the account filter.
 - **Local events:** work with no account, and can be edited and deleted from the page.
-  Google events are added here and changed in Google, through Open in Google.
+  Editing preserves a custom reminder lead unless the request explicitly changes
+  `remind`. Google events are added here and changed in Google, through Open in Google.
 
 ## Sign in
 
@@ -115,8 +120,10 @@ the helper reports it and refuses to write, so nothing overwrites it.
 | `deck/Page.qml` | the month, the agenda and the form |
 | `Panel.qml` | the standalone bar widget |
 
-What has fired is kept in `~/.local/state/deck/calendar-fired.json` (ids and times, no
-event text), so a shell restart does not repeat reminders. A reminder missed while the
+View preferences live in `~/.local/state/deck/calendar-view.json`: account filter,
+Compact, week start and whether ISO week numbers are shown. What has fired is kept
+in `~/.local/state/deck/calendar-fired.json` (ids and times, no event text), so a
+shell restart does not repeat reminders. A reminder missed while the
 laptop slept fires on waking if its event has not been running for more than 5 minutes,
 and several missed reminders of one event become one notification.
 

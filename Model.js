@@ -63,6 +63,12 @@ function dayKey(date) {
   return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate())
 }
 
+function shiftDayKey(key, days) {
+  var p = String(key).split("-")
+  var d = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]) + days))
+  return d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate())
+}
+
 function clock(ms) {
   var d = new Date(ms)
   return pad(d.getHours()) + ":" + pad(d.getMinutes())
@@ -80,14 +86,19 @@ function daysBetween(fromMs, toMs) {
 
 function monthTitle(year, month) { return MONTHS[month] + " " + year }
 
-// Always six weeks, so the page does not change height between months.
+// Always six weeks, so the page does not change height between months. Civil
+// dates are walked in UTC: some zones move clocks at local midnight, and a
+// local-midnight cursor can repeat or skip a calendar cell there.
 function monthGrid(year, month, firstDayOfWeek) {
-  var first = new Date(year, month, 1)
-  var lead = (first.getDay() - (firstDayOfWeek || 0) + 7) % 7
+  var first = new Date(Date.UTC(year, month, 1))
+  var lead = (first.getUTCDay() - (firstDayOfWeek || 0) + 7) % 7
+  var cursor = new Date(Date.UTC(year, month, 1 - lead))
   var cells = []
   for (var i = 0; i < 42; i++) {
-    var d = new Date(year, month, 1 - lead + i)
-    cells.push({ key: dayKey(d), day: d.getDate(), inMonth: d.getMonth() === month })
+    var key = cursor.getUTCFullYear() + "-" + pad(cursor.getUTCMonth() + 1) + "-" + pad(cursor.getUTCDate())
+    cells.push({ key: key, day: cursor.getUTCDate(),
+      inMonth: cursor.getUTCMonth() === month && cursor.getUTCFullYear() === year })
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
   }
   return cells
 }
@@ -97,6 +108,47 @@ function weekdayLabels(firstDayOfWeek) {
   for (var i = 0; i < 7; i++) out.push(DAYS[((firstDayOfWeek || 0) + i) % 7])
   return out
 }
+
+// ISO-8601 weeks belong to the Thursday of their Monday-based week. UTC keeps
+// this pure civil-date arithmetic, independent of daylight-saving transitions.
+function isoWeek(year, month, day) {
+  var date = new Date(Date.UTC(year, month, day))
+  var weekday = date.getUTCDay() || 7
+  date.setUTCDate(date.getUTCDate() + 4 - weekday)
+  var yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1))
+  return Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7)
+}
+
+function isoWeekForKey(key) {
+  var p = String(key || "").split("-")
+  if (p.length !== 3) return 0
+  return isoWeek(Number(p[0]), Number(p[1]) - 1, Number(p[2]))
+}
+
+// A Sunday-first row straddles two ISO weeks; its Thursday is still unambiguous.
+function isoWeekForRow(cells, row) {
+  var anchor = cells[row * 7]
+  for (var i = 0; i < 7; i++) {
+    var cell = cells[row * 7 + i]
+    if (!cell) continue
+    var p = cell.key.split("-")
+    if (new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]))).getUTCDay() === 4) anchor = cell
+  }
+  return anchor ? isoWeekForKey(anchor.key) : 0
+}
+
+function dayOfYear(year, month, day) {
+  return Math.round((Date.UTC(year, month, day) - Date.UTC(year, 0, 1)) / 86400000) + 1
+}
+
+function yearProgress(ms) {
+  var d = new Date(ms)
+  var year = d.getFullYear()
+  var total = dayOfYear(year, 11, 31)
+  return Math.max(0, Math.min(1, (dayOfYear(year, d.getMonth(), d.getDate()) - 1) / total))
+}
+
+function yearProgressPercent(ms) { return Math.round(yearProgress(ms) * 100) }
 
 // day key -> events on that day. A multi-day event is on every day it touches.
 // An event ending exactly at midnight is not on the day after.
@@ -133,6 +185,33 @@ function upcoming(events, now) {
       var sb = b.allDay ? Math.max(b.start, today) + (24 * 60 * MINUTE - 1) : b.start
       return sa - sb
     })
+}
+
+function upcomingDayLabel(ms, now) {
+  var apart = daysBetween(now, ms)
+  var d = new Date(ms)
+  if (apart === 0 || apart === 1)
+    return dayWord(ms, now) + " · " + d.getDate() + " " + MONTHS[d.getMonth()].slice(0, 3)
+  return dayWord(ms, now)
+}
+
+// Group the short agenda by civil day. An event already spanning today belongs
+// under Today, not under its original start date.
+function upcomingGroups(events, now, limit) {
+  var list = upcoming(events, now).slice(0, limit || 6)
+  var groups = []
+  var today = startOfDay(now)
+  for (var i = 0; i < list.length; i++) {
+    var at = Math.max(list[i].start, today)
+    var key = dayKey(new Date(at))
+    var group = groups.length > 0 ? groups[groups.length - 1] : null
+    if (!group || group.key !== key) {
+      group = { key: key, label: upcomingDayLabel(at, now), events: [] }
+      groups.push(group)
+    }
+    group.events.push(list[i])
+  }
+  return groups
 }
 
 function dayWord(ms, now) {
@@ -180,6 +259,19 @@ function shortColumn(e, now) {
   var day = apart === 1 ? "Tmrw" : DAYS[d.getDay()] + (apart < 7 ? "" : " " + d.getDate())
   if (e.allDay) return day
   return apart === 0 ? clock(e.start) : day + " " + clock(e.start)
+}
+
+// A useful blank form: 09:00 for another day, the next whole hour for today.
+// An empty end means one hour in newEventRequest, including across midnight.
+function defaultEventTimes(key, now) {
+  if (key !== dayKey(new Date(now))) return { start: "09:00", end: "10:00" }
+  var begin = new Date(now)
+  begin.setSeconds(0, 0)
+  begin.setMinutes(0)
+  begin.setHours(begin.getHours() + 1)
+  if (dayKey(begin) !== key) return { start: "23:30", end: "" }
+  var finish = new Date(begin.getTime() + 60 * MINUTE)
+  return { start: clock(begin.getTime()), end: dayKey(finish) === key ? clock(finish.getTime()) : "" }
 }
 
 // What the form sends, or the sentence saying why not. An empty end is an hour.

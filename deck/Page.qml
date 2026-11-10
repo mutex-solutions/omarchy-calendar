@@ -9,6 +9,8 @@ import "../Model.js" as M
 Item {
   id: page
 
+  Translations { id: strings; directory: Qt.resolvedUrl("../i18n") }
+
   property var state: null
   property var host: null
 
@@ -22,18 +24,27 @@ Item {
   readonly property real barH: Style.space(30)
   readonly property real labelsH: Style.space(20)
   readonly property real cellH: wide ? Style.space(84) : Style.space(40)
+  readonly property real yearH: Style.space(24)
+  readonly property real weekGutterW: state && state.showWeekNumbers ? Style.space(wide ? 28 : 22) : 0
   // With more than one account, a row of account chips sits under the month bar.
   readonly property bool multi: !!state && state.multiAccount
   readonly property real accountsH: multi ? accountFlow.implicitHeight + Style.space(6) : 0
-  readonly property real monthH: barH + accountsH + labelsH + 6 * cellH
+  readonly property real monthH: barH + accountsH + labelsH + 6 * cellH + yearH
   readonly property double now: state ? state.now : Date.now()
+  readonly property int yearDone: M.yearProgressPercent(now)
   readonly property var dayEvents: state && state.viewIndex[state.selectedDay] ? state.viewIndex[state.selectedDay] : []
-  readonly property var soon: state ? state.upcomingList.slice(0, 6) : []
+  readonly property var upcomingGroups: state ? M.upcomingGroups(state.upcomingList, now, 6) : []
   readonly property string selectedTitle: {
     if (!state) return ""
     var p = state.selectedDay.split("-")
-    var d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]))
+    var d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]), 12)
     return M.DAYS[d.getDay()] + " " + d.getDate() + " " + M.MONTHS[d.getMonth()]
+  }
+
+  function withAccount(name, account) {
+    var label = state ? state.accountLabel(account) : ""
+    if (!multi || !label || String(name).toLowerCase() === label.toLowerCase()) return String(name || "")
+    return name + " · " + label
   }
 
   implicitHeight: view === "account" ? accountView.implicitHeight
@@ -44,6 +55,8 @@ Item {
   // crumb and back arrow.
   property string view: "month"
   readonly property bool adding: view === "add"
+  readonly property bool keyboardEditing: adding && (titleField.focused || dateField.focused
+    || startField.focused || endField.focused || locationField.focused)
   readonly property var trail: adding ? [editId !== "" ? "Edit event" : "New event"]
     : (view === "account" ? ["Settings"] : [])
   readonly property bool canGoBack: view !== "month"
@@ -55,8 +68,9 @@ Item {
     editId = ""
     titleField.text = ""
     dateField.text = state.selectedDay
-    startField.text = "09:00"
-    endField.text = ""
+    var times = M.defaultEventTimes(state.selectedDay, now)
+    startField.text = times.start
+    endField.text = times.end
     locationField.text = ""
     allDay = false
     formError = ""
@@ -116,6 +130,7 @@ Item {
   onStateChanged: if (shown && state) state.fetchMonth()
 
   component Caps: Text {
+    textFormat: Text.PlainText
     color: Util.alpha(Color.foreground, 0.45)
     font.family: Style.font.family
     font.pixelSize: Style.font.caption
@@ -125,6 +140,7 @@ Item {
   component Field: Item {
     id: field
     property alias text: input.text
+    readonly property bool focused: input.activeFocus
     property string placeholder: ""
     function takeFocus() { input.forceActiveFocus() }
     signal accepted()
@@ -163,6 +179,9 @@ Item {
       font.pixelSize: Style.font.bodySmall
       clip: true
       selectByMouse: true
+      Accessible.role: Accessible.EditableText
+      Accessible.name: field.placeholder
+      Keys.onEscapePressed: page.goBack()
       onAccepted: field.accepted()
     }
   }
@@ -170,11 +189,16 @@ Item {
   component Chip: Rectangle {
     id: chip
     property string text: ""
+    property string accessibleName: ""
     property bool strong: false
     signal clicked()
     width: chipText.implicitWidth + Style.space(16)
     height: Style.space(24)
     radius: Style.cornerRadius
+    opacity: enabled ? 1 : 0.45
+    Accessible.role: Accessible.Button
+    Accessible.name: accessibleName !== "" ? accessibleName : text
+    Accessible.onPressAction: if (enabled) clicked()
     color: chipMouse.containsMouse
       ? Util.alpha(Color.foreground, 0.14)
       : (strong ? Util.alpha(Color.accent, 0.22) : Util.alpha(Color.foreground, 0.06))
@@ -183,6 +207,7 @@ Item {
 
     Text {
       id: chipText
+      textFormat: Text.PlainText
       anchors.centerIn: parent
       text: chip.text
       color: Color.foreground
@@ -193,8 +218,9 @@ Item {
     MouseArea {
       id: chipMouse
       anchors.fill: parent
+      enabled: chip.enabled
       hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
+      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
       onClicked: chip.clicked()
     }
   }
@@ -208,6 +234,9 @@ Item {
     property bool chosen: false
     property bool broken: false
     signal clicked()
+    Accessible.role: Accessible.Button
+    Accessible.name: text
+    Accessible.onPressAction: if (enabled) clicked()
     width: acRow.implicitWidth + Style.space(16)
     height: Style.space(24)
     radius: Style.cornerRadius
@@ -233,6 +262,7 @@ Item {
 
       Text {
         id: acText
+        textFormat: Text.PlainText
         text: ac.text
         color: ac.broken ? Color.urgent : Color.foreground
         font.family: Style.font.family
@@ -253,15 +283,20 @@ Item {
   component EventRow: Item {
     id: row
     property var event: null
-    property bool showDay: false
+    property bool upcoming: false
     readonly property bool open: !!event && !!page.state && page.state.openEventId === rowKey
-    readonly property string rowKey: event ? (showDay ? "soon:" : "day:") + event.id : ""
+    readonly property string rowKey: event ? (upcoming ? "soon:" : "day:") + event.id : ""
     readonly property real detailH: open ? details.implicitHeight + Style.space(6) : 0
     property bool deleteArmed: false
     onOpenChanged: deleteArmed = false
 
     width: parent ? parent.width : 0
     height: Style.space(28) + detailH
+    Accessible.role: Accessible.Button
+    Accessible.name: event ? event.title : ""
+    Accessible.description: open ? "Hide event details" : "Show event details"
+    Accessible.onPressAction: if (page.state && event)
+      page.state.openEventId = row.open ? "" : row.rowKey
 
     Rectangle {
       anchors.fill: parent
@@ -300,9 +335,8 @@ Item {
         anchors.left: bar.right
         anchors.leftMargin: Style.space(8)
         anchors.verticalCenter: parent.verticalCenter
-        width: Style.space(row.showDay ? 66 : 48)
+        width: Style.space(48)
         text: !row.event ? ""
-          : row.showDay ? M.timeColumn(row.event, page.now)
           : (row.event.allDay ? "All day" : M.clock(row.event.start))
         color: Util.alpha(Color.foreground, 0.6)
         font.family: Style.font.family
@@ -316,6 +350,7 @@ Item {
         anchors.right: parent.right
         anchors.rightMargin: Style.space(6)
         anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
         text: row.event ? row.event.title : ""
         color: row.event && row.event.declined ? Util.alpha(Color.foreground, 0.45) : Color.foreground
         font.family: Style.font.family
@@ -347,6 +382,7 @@ Item {
       Text {
         width: parent.width
         visible: text !== ""
+        textFormat: Text.PlainText
         text: row.event ? row.event.location : ""
         color: Util.alpha(Color.foreground, 0.7)
         font.family: Style.font.family
@@ -358,8 +394,8 @@ Item {
 
       Text {
         width: parent.width
-        text: !row.event ? ""
-          : row.event.calendar + (page.multi ? " · " + page.state.accountLabel(row.event.account) : "")
+        textFormat: Text.PlainText
+        text: row.event ? page.withAccount(row.event.calendar, row.event.account) : ""
         color: Util.alpha(Color.foreground, 0.45)
         font.family: Style.font.family
         font.pixelSize: Style.font.caption
@@ -374,7 +410,7 @@ Item {
           id: joinChip
           visible: !!row.event && row.event.joinUrl !== ""
           strong: true
-          text: "Join"
+          text: strings.t("calendar.join")
           onClicked: page.state.openLink(row.event.joinUrl)
         }
 
@@ -382,7 +418,7 @@ Item {
           anchors.left: joinChip.visible ? joinChip.right : parent.left
           anchors.leftMargin: joinChip.visible ? Style.space(6) : 0
           visible: !!row.event && row.event.url !== ""
-          text: "Open in Google"
+          text: strings.t("calendar.openInGoogle")
           onClicked: page.state.openLink(row.event.url)
         }
 
@@ -390,7 +426,7 @@ Item {
         Chip {
           id: editChip
           visible: !!row.event && row.event.local === true
-          text: "Edit"
+          text: strings.t("calendar.edit")
           onClicked: page.openEdit(row.event)
         }
 
@@ -433,6 +469,7 @@ Item {
     Text {
       width: parent.width
       visible: text !== ""
+      textFormat: Text.PlainText
       text: accountView.connected ? (page.state.account || "")
         : (page.state && accountView.status !== "missing" ? page.state.message : "")
       color: Util.alpha(Color.foreground, 0.6)
@@ -467,6 +504,7 @@ Item {
           anchors.leftMargin: Style.space(8)
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
           text: (modelData.email || modelData.key) + (modelData.ok ? ""
             : modelData.code === "signin" ? " · sign in again" : " · unavailable")
           color: modelData.ok ? Color.foreground : Color.urgent
@@ -480,7 +518,7 @@ Item {
 
     Caps {
       visible: accountView.connected
-      text: "CALENDARS"
+      text: strings.t("calendar.calendars")
     }
 
     Repeater {
@@ -506,7 +544,8 @@ Item {
           anchors.leftMargin: Style.space(8)
           anchors.right: parent.right
           anchors.verticalCenter: parent.verticalCenter
-          text: modelData.name + (page.multi ? " · " + page.state.accountLabel(modelData.account) : "")
+          textFormat: Text.PlainText
+          text: page.withAccount(modelData.name, modelData.account)
           color: Color.foreground
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
@@ -517,13 +556,13 @@ Item {
 
     Caps {
       visible: accountView.connected
-      text: "ADD AN ACCOUNT"
+      text: strings.t("calendar.addAnAccount")
     }
 
     Text {
       width: parent.width
       visible: !accountView.connected
-      text: "gws needs your OAuth client at ~/.config/gws/client_secret.json"
+      text: strings.t("calendar.gwsNeedsYourOauthClientAtConfigGwsClientSecretJson")
       color: Util.alpha(Color.foreground, 0.6)
       font.family: Style.font.family
       font.pixelSize: Style.font.caption
@@ -566,7 +605,7 @@ Item {
           anchors.right: parent.right
           anchors.rightMargin: Style.space(4)
           anchors.verticalCenter: parent.verticalCenter
-          text: "Copy"
+          text: strings.t("calendar.copy")
           onClicked: Quickshell.execDetached(["wl-copy", modelData])
         }
       }
@@ -576,6 +615,53 @@ Item {
       text: accountView.connected ? "Refresh" : "Check again"
       strong: !accountView.connected
       onClicked: page.state.refresh()
+    }
+
+    Caps { text: strings.t("calendar.calendarView") }
+
+    Text {
+      text: strings.t("calendar.startWeeksOn")
+      color: Util.alpha(Color.foreground, 0.65)
+      font.family: Style.font.family
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    Flow {
+      width: parent.width
+      spacing: Style.space(4)
+      Repeater {
+        model: [
+          { label: strings.t("calendar.automatic"), day: -1 },
+          { label: strings.t("calendar.sunday"), day: 0 },
+          { label: strings.t("calendar.monday"), day: 1 }
+        ]
+        Chip {
+          required property var modelData
+          text: modelData.label
+          strong: page.state && page.state.weekStartOverride === modelData.day
+          onClicked: page.state.setWeekStart(modelData.day)
+        }
+      }
+    }
+
+    Item {
+      width: parent.width
+      height: Style.space(28)
+      Text {
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        text: strings.t("calendar.isoWeekNumbers")
+        color: Util.alpha(Color.foreground, 0.65)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+      }
+      Chip {
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        text: page.state && page.state.showWeekNumbers ? "Shown" : "Hidden"
+        strong: page.state && page.state.showWeekNumbers
+        onClicked: page.state.toggleWeekNumbers()
+      }
     }
   }
 
@@ -591,7 +677,7 @@ Item {
     Field {
       id: titleField
       width: parent.width
-      placeholder: "Title"
+      placeholder: strings.t("calendar.title")
       onAccepted: page.saveNew()
     }
 
@@ -603,7 +689,7 @@ Item {
         id: dateField
         width: Style.space(120)
         anchors.left: parent.left
-        placeholder: "YYYY-MM-DD"
+        placeholder: strings.t("calendar.yyyyMmDd")
         onAccepted: page.saveNew()
       }
 
@@ -613,7 +699,7 @@ Item {
         width: Style.space(70)
         anchors.left: dateField.right
         anchors.leftMargin: Style.space(6)
-        placeholder: "Start"
+        placeholder: strings.t("calendar.start")
         onAccepted: page.saveNew()
       }
 
@@ -623,14 +709,14 @@ Item {
         width: Style.space(70)
         anchors.left: startField.right
         anchors.leftMargin: Style.space(6)
-        placeholder: "End"
+        placeholder: strings.t("calendar.end")
         onAccepted: page.saveNew()
       }
 
       Chip {
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        text: "All day"
+        text: strings.t("calendar.allDay")
         strong: page.allDay
         onClicked: page.allDay = !page.allDay
       }
@@ -639,7 +725,7 @@ Item {
     Field {
       id: locationField
       width: parent.width
-      placeholder: "Location"
+      placeholder: strings.t("calendar.location")
       onAccepted: page.saveNew()
     }
 
@@ -653,8 +739,8 @@ Item {
 
         Chip {
           required property var modelData
-          text: modelData.name + (page.multi && page.state.shownAccount === ""
-            ? " · " + page.state.accountLabel(modelData.account) : "")
+          text: page.multi && page.state.shownAccount === ""
+            ? page.withAccount(modelData.name, modelData.account) : modelData.name
           strong: page.calendarId === modelData.id
           onClicked: {
             page.calendarId = modelData.id
@@ -667,6 +753,7 @@ Item {
     Text {
       width: parent.width
       visible: text !== ""
+      textFormat: Text.PlainText
       text: page.formError !== "" ? page.formError : (page.state ? page.state.createError : "")
       color: Color.urgent
       font.family: Style.font.family
@@ -675,7 +762,8 @@ Item {
     }
 
     Chip {
-      text: page.state && page.state.creating ? "Saving" : (page.editId !== "" ? "Save" : "Add event")
+      enabled: !!page.state && !page.state.creating
+      text: page.state && page.state.creating ? "Saving…" : (page.editId !== "" ? "Save" : "Add event")
       strong: true
       onClicked: page.saveNew()
     }
@@ -698,6 +786,7 @@ Item {
         id: prevChip
         anchors.verticalCenter: parent.verticalCenter
         text: "‹"
+        accessibleName: "Previous month"
         onClicked: page.state.shiftMonth(-1)
       }
 
@@ -707,6 +796,7 @@ Item {
         anchors.leftMargin: Style.space(4)
         anchors.verticalCenter: parent.verticalCenter
         text: "›"
+        accessibleName: "Next month"
         onClicked: page.state.shiftMonth(1)
       }
 
@@ -759,7 +849,7 @@ Item {
         anchors.right: refreshChip.left
         anchors.rightMargin: Style.space(4)
         anchors.verticalCenter: parent.verticalCenter
-        text: "Today"
+        text: strings.t("calendar.today")
         onClicked: page.state.goToday()
       }
 
@@ -799,7 +889,7 @@ Item {
       spacing: Style.space(4)
 
       AccountChip {
-        text: "All"
+        text: strings.t("calendar.all")
         // Neutral: the first account's colour is close to most accents.
         dot: Util.alpha(Color.foreground, 0.6)
         chosen: !!page.state && page.state.shownAccount === ""
@@ -830,14 +920,26 @@ Item {
       width: parent.width
       height: page.labelsH
 
+      Text {
+        visible: page.weekGutterW > 0
+        width: page.weekGutterW
+        height: labels.height
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+        text: strings.t("calendar.w")
+        color: Util.alpha(Color.foreground, 0.35)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
       Repeater {
         model: page.state ? M.weekdayLabels(page.state.firstDayOfWeek) : []
 
         Text {
           required property string modelData
           required property int index
-          x: index * labels.width / 7
-          width: labels.width / 7
+          x: page.weekGutterW + index * (labels.width - page.weekGutterW) / 7
+          width: (labels.width - page.weekGutterW) / 7
           height: labels.height
           horizontalAlignment: Text.AlignHCenter
           verticalAlignment: Text.AlignVCenter
@@ -854,7 +956,23 @@ Item {
       y: page.barH + page.accountsH + page.labelsH
       width: parent.width
       height: 6 * page.cellH
-      readonly property real cellW: width / 7
+      readonly property real cellW: (width - page.weekGutterW) / 7
+
+      Repeater {
+        model: page.weekGutterW > 0 && page.state ? 6 : 0
+        Text {
+          required property int index
+          y: index * page.cellH
+          width: page.weekGutterW
+          height: page.cellH
+          horizontalAlignment: Text.AlignHCenter
+          verticalAlignment: Text.AlignVCenter
+          text: page.state ? String(M.isoWeekForRow(page.state.grid, index)) : ""
+          color: Util.alpha(Color.foreground, 0.35)
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+        }
+      }
 
       Repeater {
         model: page.state ? page.state.grid : []
@@ -869,13 +987,17 @@ Item {
           // Three rows of events fit a wide cell; the last gives way to "+N".
           readonly property int shownCount: !page.wide ? 0 : (dayList.length > 3 ? 2 : dayList.length)
 
-          x: (index % 7) * cells.cellW
+          x: page.weekGutterW + (index % 7) * cells.cellW
           y: Math.floor(index / 7) * page.cellH
           width: cells.cellW
           height: page.cellH
           radius: Style.cornerRadius
           color: isSelected ? Util.alpha(Color.accent, 0.14)
             : (cellMouse.containsMouse ? Util.alpha(Color.foreground, 0.05) : "transparent")
+          Accessible.role: Accessible.Button
+          Accessible.name: M.dayLine(Date.parse(cell.modelData.key + "T12:00:00"))
+            + (cell.dayList.length > 0 ? ", " + cell.dayList.length + " events" : ", no events")
+          Accessible.onPressAction: page.state.selectDay(cell.modelData.key)
           border.width: 1
           border.color: isSelected ? Util.alpha(Color.accent, 0.6) : Util.alpha(Color.foreground, 0.06)
 
@@ -927,6 +1049,7 @@ Item {
                 anchors.leftMargin: Style.space(4)
                 anchors.rightMargin: Style.space(2)
                 verticalAlignment: Text.AlignVCenter
+                textFormat: Text.PlainText
                 text: modelData.title
                 color: Color.foreground
                 font.family: Style.font.family
@@ -959,6 +1082,54 @@ Item {
             radius: width / 2
             color: (cell.dayList.length > 0 ? page.state.eventColor(cell.dayList[0]) : "") || Color.accent
           }
+        }
+      }
+    }
+
+    Item {
+      id: yearRail
+      y: page.barH + page.accountsH + page.labelsH + 6 * page.cellH
+      width: parent.width
+      height: page.yearH
+
+      Text {
+        id: yearLabel
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(6)
+        anchors.verticalCenter: parent.verticalCenter
+        text: String(new Date(page.now).getFullYear())
+        color: Util.alpha(Color.foreground, 0.45)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        id: yearPercent
+        anchors.right: parent.right
+        anchors.rightMargin: Style.space(6)
+        anchors.verticalCenter: parent.verticalCenter
+        text: page.yearDone + "%"
+        color: Util.alpha(Color.foreground, 0.65)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+      }
+
+      Rectangle {
+        id: yearTrack
+        anchors.left: yearLabel.right
+        anchors.leftMargin: Style.space(10)
+        anchors.right: yearPercent.left
+        anchors.rightMargin: Style.space(10)
+        anchors.verticalCenter: parent.verticalCenter
+        height: Style.space(4)
+        radius: height / 2
+        color: Util.alpha(Color.foreground, 0.1)
+
+        Rectangle {
+          width: parent.width * M.yearProgress(page.now)
+          height: parent.height
+          radius: parent.radius
+          color: Color.accent
         }
       }
     }
@@ -1015,7 +1186,7 @@ Item {
         leftPadding: Style.space(6)
         height: Style.space(28)
         verticalAlignment: Text.AlignVCenter
-        text: "No events"
+        text: strings.t("calendar.noEvents")
         color: Util.alpha(Color.foreground, 0.45)
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall
@@ -1030,26 +1201,46 @@ Item {
           anchors.leftMargin: Style.space(6)
           anchors.bottom: parent.bottom
           anchors.bottomMargin: Style.space(4)
-          text: "UPCOMING"
+          text: strings.t("calendar.upcoming")
         }
       }
 
       Repeater {
-        model: page.soon
+        model: page.upcomingGroups
 
-        EventRow {
+        Column {
           required property var modelData
-          event: modelData
-          showDay: true
+          required property int index
+          width: agendaColumn.width
+          spacing: Style.space(2)
+
+          Caps {
+            width: parent.width
+            height: Style.space(index === 0 ? 20 : 26)
+            leftPadding: Style.space(6)
+            topPadding: index === 0 ? 0 : Style.space(6)
+            verticalAlignment: Text.AlignVCenter
+            text: modelData.label
+            elide: Text.ElideRight
+          }
+
+          Repeater {
+            model: modelData.events
+            EventRow {
+              required property var modelData
+              event: modelData
+              upcoming: true
+            }
+          }
         }
       }
 
       Text {
-        visible: page.soon.length === 0
+        visible: page.upcomingGroups.length === 0
         leftPadding: Style.space(6)
         height: Style.space(28)
         verticalAlignment: Text.AlignVCenter
-        text: "Nothing coming up"
+        text: strings.t("calendar.nothingComingUp")
         color: Util.alpha(Color.foreground, 0.45)
         font.family: Style.font.family
         font.pixelSize: Style.font.bodySmall

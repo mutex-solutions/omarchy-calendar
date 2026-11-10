@@ -23,7 +23,7 @@ test -f deck/Section.qml || { echo "deck/Section.qml missing" >&2; exit 1; }
 test -f deck/Page.qml || { echo "deck/Page.qml missing" >&2; exit 1; }
 
 # Dates are where zones bite, so run the model in more than one.
-for tz in Asia/Ho_Chi_Minh America/New_York Pacific/Auckland; do
+for tz in Asia/Ho_Chi_Minh America/New_York Pacific/Auckland America/Santiago America/Havana; do
   TZ="$tz" node tests/model.test.js
 done
 python3 -I tests/test_helper.py 2>&1 | tail -1

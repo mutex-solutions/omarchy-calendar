@@ -1,5 +1,4 @@
 import QtQuick
-import Quickshell
 import qs.Commons
 import "../Model.js" as M
 
@@ -21,10 +20,6 @@ Item {
   readonly property Component tileSquare: listTile
   readonly property Component tileFull: listTile
 
-  function openPage() {
-    Quickshell.execDetached(["omarchy-shell", "mutex-solutions.deck", "openSection", "calendar"])
-  }
-
   Loader {
     id: stateLoader
     source: "../State.qml"
@@ -37,6 +32,7 @@ Item {
       id: body
       signal holdStarted()
       signal holdEnded()
+      signal pageRequested(string sectionId)
       readonly property var st: s.state
       readonly property var list: st ? st.upcomingList : []
       readonly property double now: st ? st.now : Date.now()
@@ -58,7 +54,7 @@ Item {
         onReleased: {
           pageHold.stop()
           body.holdEnded()
-          if (!held) s.openPage()
+          if (!held) body.pageRequested("")
         }
         onCanceled: {
           pageHold.stop()
@@ -72,7 +68,7 @@ Item {
           onTriggered: {
             pageArea.held = true
             body.holdEnded()
-            s.openPage()
+            body.pageRequested("")
           }
         }
       }

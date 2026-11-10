@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import qs.Commons
 import "Model.js" as M
 
 // Calendar state. One instance, shared by the tile and the page.
@@ -55,6 +56,18 @@ Item {
 
   // Compact: a small month with the day's events under it, at Deck's usual width.
   property bool compact: false
+  property int weekStartOverride: -1
+  property bool showWeekNumbers: false
+
+  function setWeekStart(day) {
+    weekStartOverride = day === 0 || day === 1 ? day : -1
+    saveView()
+    fetchMonth(true)
+  }
+  function toggleWeekNumbers() {
+    showWeekNumbers = !showWeekNumbers
+    saveView()
+  }
 
   function chooseAccount(key) {
     accountFilter = key || ""
@@ -67,7 +80,10 @@ Item {
   }
 
   function saveView() {
-    viewFile.setText(JSON.stringify({ account: accountFilter, compact: compact }))
+    viewFile.setText(JSON.stringify({
+      account: accountFilter, compact: compact,
+      weekStart: weekStartOverride, weekNumbers: showWeekNumbers
+    }))
   }
 
   FileView {
@@ -79,6 +95,8 @@ Item {
         var saved = JSON.parse(text()) || {}
         s.accountFilter = String(saved.account || "")
         s.compact = saved.compact === true
+        s.weekStartOverride = saved.weekStart === 0 || saved.weekStart === 1 ? saved.weekStart : -1
+        s.showWeekNumbers = saved.weekNumbers === true
       } catch (e) {
       }
     }
@@ -112,7 +130,8 @@ Item {
   property string selectedDay: M.dayKey(new Date())
   property string openEventId: ""
   readonly property string todayKey: M.dayKey(new Date(now))
-  readonly property int firstDayOfWeek: Qt.locale().firstDayOfWeek % 7
+  readonly property int firstDayOfWeek: weekStartOverride >= 0
+    ? weekStartOverride : Qt.locale(I18n.formatLocale).firstDayOfWeek % 7
   readonly property var grid: M.monthGrid(viewYear, viewMonth, firstDayOfWeek)
 
   // month key -> { events, at }
@@ -181,10 +200,9 @@ Item {
     }
     monthPending = false
     var cells = M.monthGrid(viewYear, viewMonth, firstDayOfWeek)
-    var last = cells[cells.length - 1].key.split("-")
-    var after = new Date(Number(last[0]), Number(last[1]) - 1, Number(last[2]) + 1)
+    var after = M.shiftDayKey(cells[cells.length - 1].key, 1)
     monthProc.key = viewKey
-    monthProc.command = [helper, "range", cells[0].key, M.dayKey(after)]
+    monthProc.command = [helper, "range", cells[0].key, after]
     monthProc.running = true
   }
   property bool monthPending: false

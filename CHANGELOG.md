@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Custom tile navigation now stays inside the originating Deck panel rather than
+  using global IPC, so opening the page cannot jump to another monitor.
+
+- Editing a local event preserves its custom reminder lead when `remind` is
+  omitted instead of resetting it to ten minutes.
+- Added saved Automatic/Sunday/Monday week starts, an ISO week-number gutter and
+  Omarchy's year-progress rail. Preferences live in `calendar-view.json`.
+- Upcoming events are grouped by day. New-event times default to the next hour
+  today (09:00 on another day), and primary calendar/account labels no longer
+  repeat the same address.
+- Month grids are generated as civil dates in UTC and validated across five time
+  zones, including midnight-DST transitions. Text forms cooperate with Deck's
+  keyboard cursor, event text renders plainly, and the UI ships an English
+  translation catalog.
+
 ## 0.3.3
 
 - **Every timed event reminds 10 minutes before**, on top of its own reminders.

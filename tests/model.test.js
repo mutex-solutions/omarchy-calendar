@@ -18,6 +18,15 @@ t("grid survives a clock change", () => {
   const keys = M.monthGrid(2026, 2, 1).map(c => c.key)      // March, DST in many zones
   assert.equal(new Set(keys).size, 42)
 })
+t("every 2026 grid is unique, including midnight-DST zones", () => {
+  for (let month = 0; month < 12; month++) {
+    const grid = M.monthGrid(2026, month, 1)
+    assert.equal(new Set(grid.map(c => c.key)).size, 42, `month ${month + 1}`)
+    assert.equal(grid.filter(c => c.inMonth).length, new Date(Date.UTC(2026, month + 1, 0)).getUTCDate())
+  }
+  assert.equal(M.shiftDayKey("2026-12-31", 1), "2027-01-01")
+  assert.equal(M.shiftDayKey("2024-02-28", 1), "2024-02-29")
+})
 t("a multi-day event is on each day; midnight end is not the next day", () => {
   const i = M.indexByDay([ev({ allDay: true, start: at(2026, 11, 6), end: at(2026, 11, 8) })])
   assert.deepEqual(Object.keys(i), ["2026-11-06", "2026-11-07"])
@@ -78,6 +87,12 @@ t("event text is escaped for the notification body", () => {
 t("prune keeps a week", () => {
   assert.deepEqual(Object.keys(M.pruneFired({ old: now - 8 * 86400000, recent: now - 86400000 }, now)), ["recent"])
 })
+t("new event defaults are useful today, tomorrow, and near midnight", () => {
+  assert.deepEqual(M.defaultEventTimes("2026-11-06", now), { start: "11:00", end: "12:00" })
+  assert.deepEqual(M.defaultEventTimes("2026-11-07", now), { start: "09:00", end: "10:00" })
+  assert.deepEqual(M.defaultEventTimes("2026-11-06", at(2026, 11, 6, 22, 30)), { start: "23:00", end: "" })
+  assert.deepEqual(M.defaultEventTimes("2026-11-06", at(2026, 11, 6, 23, 15)), { start: "23:30", end: "" })
+})
 t("new event request", () => {
   assert.equal(M.newEventRequest(" ", "2026-11-20", true).error, "Give the event a title.")
   assert.ok(M.newEventRequest("x", "soon", true).error)
@@ -133,5 +148,31 @@ t("tile column carries the time", () => {
   assert.equal(M.shortColumn(ev({ start: at(2026, 11, 7, 9), end: at(2026, 11, 7, 10) }), now), "Tmrw 09:00")
   assert.equal(M.shortColumn(ev({ start: at(2026, 11, 6, 15), end: at(2026, 11, 6, 16) }), now), "15:00")
   assert.equal(M.shortColumn(ev({ start: at(2026, 11, 10, 14), end: at(2026, 11, 10, 15) }), now), "Tue 14:00")
+})
+t("ISO weeks include year boundaries and use Thursday for either week start", () => {
+  assert.equal(M.isoWeekForKey("2021-01-01"), 53)
+  assert.equal(M.isoWeekForKey("2026-01-01"), 1)
+  assert.equal(M.isoWeekForKey("2027-01-01"), 53)
+  const monday = M.monthGrid(2026, 0, 1)
+  const sunday = M.monthGrid(2026, 0, 0)
+  assert.equal(M.isoWeekForRow(monday, 0), 1)
+  assert.equal(M.isoWeekForRow(sunday, 0), 1)
+  assert.equal(M.isoWeekForRow(monday, 5), M.isoWeekForKey(monday[41].key))
+})
+t("year progress is whole days completed and handles leap years", () => {
+  assert.equal(M.yearProgressPercent(at(2026, 1, 1)), 0)
+  assert.equal(M.yearProgressPercent(at(2026, 12, 31)), 100)
+  assert.equal(M.yearProgressPercent(at(2024, 12, 31)), 100)
+  assert.ok(M.yearProgress(at(2024, 7, 2)) > M.yearProgress(at(2023, 7, 2)))
+})
+t("upcoming is grouped by day, including an all-day event already underway", () => {
+  const groups = M.upcomingGroups([
+    ev({ id: "later", start: at(2026, 11, 7, 9), end: at(2026, 11, 7, 10) }),
+    ev({ id: "next", start: at(2026, 11, 6, 15), end: at(2026, 11, 6, 16) }),
+    ev({ id: "span", allDay: true, start: at(2026, 11, 5), end: at(2026, 11, 8) }),
+  ], now, 6)
+  assert.deepEqual(groups.map(g => g.label), ["Today · 6 Nov", "Tomorrow · 7 Nov"])
+  assert.deepEqual(groups.map(g => g.events.map(e => e.id)), [["next", "span"], ["later"]])
+  assert.equal(M.upcomingGroups([ev({ id: "a", start: now, end: now + 1 }), ev({ id: "b", start: now, end: now + 1 })], now, 1)[0].events.length, 1)
 })
 console.log("model ok: " + n + " tests")

@@ -208,6 +208,19 @@ class Helper(unittest.TestCase):
         self.assertEqual(self.local()["events"], [])
         self.assertEqual(self.create({"id": a["id"]}, "delete")[0], 1)
 
+    def test_local_update_preserves_an_omitted_custom_reminder(self):
+        self.offline()
+        _, a = self.create({"title": "Custom", "date": "2026-11-20", "start": "09:00", "remind": 45})
+        rc, _ = self.create({"id": a["id"], "title": "Renamed", "date": "2026-11-21", "start": "10:00"}, "update")
+        self.assertEqual(rc, 0)
+        e = self.local()["events"][0]
+        self.assertEqual(e["reminders"], [e["start"] - 45 * 60000])
+        rc, _ = self.create({"id": a["id"], "title": "Renamed", "date": "2026-11-21", "start": "10:00",
+                             "remind": 5}, "update")
+        self.assertEqual(rc, 0)
+        e = self.local()["events"][0]
+        self.assertEqual(e["reminders"], [e["start"] - 5 * 60000])
+
     def test_google_events_cannot_be_changed_here(self):
         for action in ("update", "delete"):
             rc, a = self.create({"id": "me@x/e1", "title": "x", "date": "2026-11-20"}, action)
